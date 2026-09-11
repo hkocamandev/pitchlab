@@ -1,0 +1,50 @@
+# --- Project documentation: local only, never published ---
+docs/
+
+# --- Data: never committed (see README "Data source and licensing") ---
+data/
+models/
+*.parquet
+*.csv
+*.feather
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Go ---
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node / frontend ---
+node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Local tooling ---
+*.log
+tmp/
