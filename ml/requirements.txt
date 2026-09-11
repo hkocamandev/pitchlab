@@ -1,0 +1,24 @@
+# PitchLab ML stack
+#
+# Python: 3.14 (system). See ADR note in reports/ for why 3.12 was not needed.
+#
+# pandas is pinned below 3.0 deliberately. pybaseball 2.2.7 declares an
+# unbounded `pandas>=1.0.3` and predates the pandas 3.0 API changes, so an
+# unpinned install resolves to a version it was never tested against.
+# pandas 2.3.3 is the newest 2.x release shipping cp314 wheels.
+
+# --- Data access ---
+pybaseball==2.2.7
+pandas>=2.3.3,<3
+numpy>=2.0,<3
+pyarrow>=17
+
+# --- Modeling ---
+lightgbm>=4.5,<5
+scikit-learn>=1.5,<2
+scipy>=1.14
+shap>=0.46
+
+# --- Reporting ---
+matplotlib>=3.9
+tqdm>=4.66

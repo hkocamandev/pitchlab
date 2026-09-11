@@ -4,7 +4,7 @@
 
 [![Status](https://img.shields.io/badge/status-design%20complete%20%C2%B7%20phase%201-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
 
 > **The goal is not to build the largest possible system.** It is to build a coherent, technically defensible, production-minded platform where every architectural decision — including the ones that were *rejected* — has a written justification.
@@ -125,7 +125,19 @@ This dataset is unusually easy to leak, which is exactly why it is a good exerci
 
 Two leaks are worth calling out because they are the ones that get missed:
 
-**1. The missingness pattern.** `launch_speed` is only populated when the ball was hit. Handing the model that column — even full of nulls — hands it the `IN_PLAY` label directly. Gradient boosters use missingness as a split criterion and will separate that class perfectly. The model looks spectacular and is worthless.
+**1. The missingness pattern.** `launch_speed` is only populated when the ball was hit. Handing the model that column — even full of nulls — hands it the label directly. Gradient boosters use missingness as a split criterion and will separate those classes perfectly. The model looks spectacular and is worthless.
+
+Measured on a 28k-pitch sample, the column's fill rate by outcome class is:
+
+| Class | `launch_speed` populated |
+|---|---:|
+| `IN_PLAY` | 99.6% |
+| `FOUL` | 81.4% |
+| `SWINGING_STRIKE` | 0.0% |
+| `CALLED_STRIKE` | 0.0% |
+| `BALL` | 0.0% |
+
+The leak is wider than "it reveals `IN_PLAY`" — the field answers *did the bat touch the ball*, separating two classes from the other three.
 
 **2. Future information.** `pitcher_days_since_prev_game` is safe. `pitcher_days_until_next_game` is not — that value cannot exist at pitch time, and a large one implies the pitcher got injured. One word apart; scientific validity apart.
 
@@ -158,7 +170,22 @@ Statcast column names are stable. Their **meanings are not.** Four regime breaks
 
 The 2026 break is the dangerous one: **the column names did not change.** A model trained on 2025 and applied to 2026 raises no exception and throws no error — it just becomes quietly wrong.
 
-So 2026 is deliberately excluded from training and evaluation, and is instead used as a **drift demonstration**: replay it against the 2023–2025 model and watch `ml_predicted_class_total` and `ml_feature_null_ratio` shift in Grafana. That is the concrete answer to "how would you notice your model degrading in production?" — and it is only possible because the data source is live rather than a frozen file.
+This was asserted from MLB's field documentation during design, then verified against data. Comparing matched late-June weeks (28k pitches in 2025, 26k in 2026):
+
+| Field | 2025 SD | 2026 SD | Cohen's *d* | |
+|---|---:|---:|---:|---|
+| `sz_top` | 0.192 | 0.101 | **−1.485** | regime-sensitive |
+| `sz_bot` | 0.112 | 0.051 | +0.215 | regime-sensitive |
+| `release_speed` | — | — | +0.037 | control |
+| `release_spin_rate` | — | — | −0.039 | control |
+| `release_extension` | — | — | +0.047 | control |
+| `pfx_z` | — | — | −0.019 | control |
+
+The clearest fingerprint is not the mean shift but the **cardinality collapse**: `sz_top` has **13,660 distinct values in 2025 and 243 in 2026**. Under the old system an operator marked the zone by hand on every pitch; under ABS it is derived deterministically from player height, so it collapses to roughly one value per player. Control fields move by |*d*| ≤ 0.05 across the same window, which rules out a generic season-to-season drift.
+
+2026 is therefore excluded from training and evaluation — and repurposed as the **drift demonstration**.
+
+Replaying 2026 against the 2023–2025 model and watching `ml_predicted_class_total` and `ml_feature_null_ratio` shift in Grafana is the concrete answer to "how would you notice your model degrading in production?" — and it is only possible because the data source is live rather than a frozen file.
 
 ---
 
@@ -290,7 +317,7 @@ Distributed tracing is *not* included in v1. At three processes on one machine, 
 | Layer | Choice | Why |
 |---|---|---|
 | Backend | Go 1.25 | High concurrency (Kafka consumers + WebSocket hub), single-binary deploys, low memory |
-| ML | Python 3.12 · LightGBM · FastAPI | Best-in-class on tabular data; SHAP for explainability; low-latency serving |
+| ML | Python 3.14 · LightGBM · FastAPI | Best-in-class on tabular data; SHAP for explainability; low-latency serving |
 | Messaging | Apache Kafka (KRaft) | Ordering per partition, offset-based replay, consumer groups, durability |
 | Database | PostgreSQL 16 | Strong constraints, JSONB, partial indexes, `sqlc` for compile-time-safe SQL |
 | Cache | Redis 7 | Ephemeral live state and expensive-aggregation caching — never the system of record |
@@ -323,7 +350,7 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Discovery & design | ✅ Complete |
-| 1 | Data engineering & ML prototype | ⏳ Next |
+| 1 | Data engineering & ML prototype | 🔨 In progress |
 | 2 | Domain model & PostgreSQL | ⏳ Parallel with 1 |
 | 3 | Go backend · REST | |
 | 4 | ML inference service | |
@@ -344,14 +371,35 @@ Three tests are non-negotiable and will not be cut under time pressure: the **le
 
 ## Getting started
 
-> Implementation begins in phase 1. This section will be filled in as the stack comes online.
+The full stack lands over phases 2–12. What runs today is the ML pipeline.
 
 ```bash
 git clone <repo-url> && cd pitchlab
+
+# macOS: LightGBM needs the OpenMP runtime
+brew install libomp
+
+python3 -m venv .venv
+.venv/bin/pip install -r ml/requirements.txt
+
+# Pull two matched sample weeks and verify the data contracts
+.venv/bin/python ml/scripts/validate_data.py
+```
+
+`validate_data.py` fetches ~54k pitches, checks the label mapping for
+unmapped values, reports per-field missingness, and runs the 2025-vs-2026
+regime comparison described above. It caches its samples under `data/`, so
+reruns are free.
+
+```bash
 make demo          # compose up → migrate → seed → replay   (target: phase 12)
 ```
 
-**Prerequisites:** Go 1.25+, Python 3.12, Node 20+, Docker with Compose v2.
+**Prerequisites:** Go 1.25+, Python 3.12+, Node 20+, Docker with Compose v2.
+
+> `pandas` is pinned below 3.0: `pybaseball` declares an unbounded
+> `pandas>=1.0.3` but predates the 3.0 API changes, so an unpinned install
+> resolves to a version it was never tested against.
 
 ---
 
