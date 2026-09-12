@@ -373,6 +373,40 @@ Request id and correlation id are deliberately separate headers. One covers a si
 
 ---
 
+## The inference service
+
+The one genuinely separate service in the system, and it passes the test the others fail: a different runtime (LightGBM and SHAP are a Python ecosystem), a different release cadence (models retrain on their own schedule), and a different scaling shape (stateless, CPU-bound). It holds no database connection and knows no domain rules — given a feature vector it returns a number.
+
+**Training and serving are checked against each other.** A test scores the same pitches through the service and through the offline training code and requires the probabilities to match to 1e-12. Divergence there is the classic way a model goes quietly wrong in production: nothing errors, the numbers just stop meaning anything. They currently match to zero.
+
+**Unknown features are rejected, not ignored.** Send `realease_speed` and the request fails with a 400 naming the field. Ignoring it would turn a typo into a missing value, and the pitch would be scored on incomplete input with nothing anywhere reporting a problem. Missing features *are* allowed — a device can fail to read a value, and the model handles that natively; imputing a mean would invent a measurement nobody took.
+
+**Model artifacts are validated at startup.** The booster carries its own feature names; if they disagree with the model card, the process refuses to start rather than scoring every pitch on the wrong columns.
+
+**SHAP is off the live path, and the measurement says why.** Measured on this hardware:
+
+| Batch | p50 | p95 | Per pitch |
+|---:|---:|---:|---:|
+| 1 | 4.55 ms | 5.35 ms | 4.55 ms |
+| 10 | 5.26 ms | 5.88 ms | 0.53 ms |
+| 50 | 7.18 ms | 7.74 ms | 0.14 ms |
+| 200 | 15.93 ms | 17.11 ms | 0.08 ms |
+| **1, with SHAP** | **49.94 ms** | **52.66 ms** | — |
+
+An explanation costs eleven times a prediction. The stream needs the number; a user opening one pitch can afford to wait.
+
+**Explanations are reported in margin space, not probability.** SHAP is additive in log-odds — base value plus contributions equals the prediction exactly. Softmax is not linear, so that guarantee does not survive conversion, and presenting the values as "probability points" would be a convenient lie. The response carries the probability separately, plus `other_contribution` for everything outside the top N, so the decomposition still adds up and truncation is distinguishable from a bug.
+
+### When inference is down
+
+The processor calls the service synchronously, because it cannot persist a pitch without the prediction that goes to the dashboard with it. Putting a topic between them would be asynchrony for its own sake — one side would still be waiting, just with more moving parts.
+
+What must not happen is the pipeline stopping. A circuit breaker trips after five consecutive failures and then fails immediately rather than letting every message pay its full retry budget to rediscover the same outage; it probes after thirty seconds and needs two consecutive successes to close, because one could be luck. A failure while probing reopens at once — the probe *was* the test.
+
+The pitch is persisted either way, marked as having no prediction, and can be backfilled from data already in PostgreSQL. A contract violation is surfaced as its own error type and never retried: training and serving disagreeing about what a feature vector looks like is not something waiting fixes.
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out to the browser console.
@@ -430,8 +464,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 1 | Data engineering & ML prototype | ✅ Complete |
 | 2 | Domain model & PostgreSQL | ✅ Complete |
 | 3 | Go backend · REST | ✅ Complete |
-| 4 | ML inference service | 🔨 In progress |
-| 5 | Kafka event architecture | |
+| 4 | ML inference service | ✅ Complete |
+| 5 | Kafka event architecture | 🔨 In progress |
 | 6 | Replay simulator | |
 | 7 | WebSocket | |
 | 8 | Redis | |
@@ -493,6 +527,7 @@ make seed          # register the replay device and the trained models
 .venv/bin/python ml/scripts/load_to_postgres.py --sessions 20
 
 go run ./cmd/api   # http://localhost:8081
+make ml-serve      # http://localhost:8000
 make test-integration
 ```
 

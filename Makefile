@@ -122,6 +122,14 @@ ml-pull: ## Pull the full training window
 ml-train: ## Train both model variants
 	$(VENV) ml/scripts/train_model.py --version pitch-outcome-v1.0.0
 
+.PHONY: ml-serve
+ml-serve: ## Run the inference service locally
+	$(VENV) -m uvicorn ml.service.app:app --port 8000 --reload
+
+.PHONY: ml-load
+ml-load: ## Load real pitches into PostgreSQL (temporary, until phase 6)
+	$(VENV) ml/scripts/load_to_postgres.py --sessions 20
+
 # --- combined --------------------------------------------------------------
 
 .PHONY: check

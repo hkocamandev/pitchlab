@@ -53,5 +53,28 @@ services:
       timeout: 3s
       retries: 10
 
+  pitchlab-ml:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    container_name: pitchlab-ml
+    environment:
+      PITCHLAB_MODELS_DIR: /models
+      PITCHLAB_LOG_LEVEL: ${PITCHLAB_LOG_LEVEL:-info}
+      PITCHLAB_VERSION: ${PITCHLAB_VERSION:-dev}
+    volumes:
+      # Models are mounted rather than baked in: they are large, they change
+      # on their own schedule, and rebuilding the image to ship a retrained
+      # model would couple two release cycles that are deliberately separate.
+      - ./models:/models:ro
+    ports:
+      - "${PITCHLAB_ML_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
 volumes:
   postgres-data:
