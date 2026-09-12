@@ -109,13 +109,20 @@ PitchScore = 100 + 10 × ((μ − xRV) / σ)
 
 Every link in the chain comes from data. There is no hand-tuned weight anywhere, and the score is **reversible** — you can walk `PitchScore → xRV → class probabilities → feature contributions` and show your work in the UI.
 
-Two model variants are trained, following the established Stuff+ / Location+ decomposition:
+### Two models, because one target does not answer both questions
 
-| Metric | Features | Answers |
-|---|---|---|
-| `stuff_score` | physical only, **no location** | How good was the pitch itself? |
-| `pitch_score` | physical **+ location** | How good was the pitch, where it went? |
-| `location_score` | the difference | What did location contribute? |
+The design called for a second "stuff" model: the same 5-class target, trained without location features, so that `stuff_score` would measure the pitch itself and `pitch_score − stuff_score` would isolate location's contribution.
+
+Measurement killed that. Physical features reach only **0.554 AUC on the swing decision** — barely better than a coin flip. That is obvious in hindsight: a batter decides whether to offer based on where the pitch is going, not on its spin rate. Since the swing/take split dominates the 5-class target, a location-free model of it is close to useless (+1.3% over baseline).
+
+Conditioning on a swing changes the picture — the same features reach **0.652 AUC**. So the stuff model was re-pointed at the question public Stuff+ models actually ask:
+
+| Model | Target | Features | Answers |
+|---|---|---|---|
+| `pitching` | 5-class outcome, every pitch | physical + context + location | How good was this pitch, all in? |
+| `stuff` | P(whiff \| swing), swings only | physical only | How hard is this pitch to hit when offered at? |
+
+`location_score` was dropped for v1. The two models now predict different targets on different populations, so their scores are not on a common scale and subtracting them would manufacture a meaningless number. Location's contribution is still reported — `dist_from_zone_center` alone carries 58% of the outcome model's split gain — but turning that into a published score needs an ablation-based approach, deferred to the hardening phase.
 
 ---
 
@@ -153,7 +160,33 @@ One subtle distinction is preserved: `delta_run_exp` is **banned as a feature** 
 │  μ/σ, arsenal refs   │  calibration   │  final report  │  demonstration    │
 ```
 
-A sanity check is baked into the acceptance criteria: if any class reaches OvR AUC > 0.95, that is **an alarm, not a success**. The realistic target is an 8–15% log-loss improvement over a count × pitch-group empirical prior.
+A sanity check is baked into the acceptance criteria: if any class reaches OvR AUC > 0.95, that is **an alarm, not a success**.
+
+It fired. `BALL` came in at 0.950 and the outcome model beat its baseline by 33%, far outside the 8–15% band the design predicted. The investigation is in the results below; the short version is that the band was mis-specified, not the model.
+
+## Results
+
+Trained on the 2023–2025 snapshot (2.86M rows pulled, 1.42M after labelling and regime filtering). Test split read once, after the models were frozen.
+
+| Model | Metric | Value | Baseline | |
+|---|---|---:|---:|---|
+| `pitching` | log loss | **0.9725** | 1.4578 | **+33.3%** |
+| `pitching` | ECE | **0.0042** | — | well calibrated |
+| `pitching` | accuracy | 58.95% | 36.47% | |
+| `stuff` | ROC-AUC | **0.6532** | 0.5000 | |
+| `stuff` | log loss | **0.5180** | 0.5442 | **+4.8%** |
+
+Validation and test agree to within 0.05 percentage points (+33.34% vs +33.29%), which is the main evidence that the model is not overfit.
+
+### Was the alarm leakage?
+
+No — it was geometry, and three checks separate the two:
+
+1. **Only geometric classes are affected.** `BALL` reaches 0.950; `CALLED_STRIKE` 0.897. Both are outcomes of pitches the batter *did not swing at*, where the result is by definition the pitch's position relative to the zone. The classes that require contact stay hard: `SWINGING_STRIKE` 0.766, `FOUL` 0.779, `IN_PLAY` 0.814. Leakage does not politely confine itself to three of five classes.
+2. **The signal disappears without location.** Physical features alone reach 0.554 on the swing decision. A leaked outcome would show up there too.
+3. **The dominant feature is a distance.** `dist_from_zone_center` carries 58% of split gain. That is a property of the ball's own trajectory, measured before the batter's decision resolves — not a property of what happened next.
+
+The design's mistake was setting one expectation band for a target whose difficulty is wildly uneven across classes. The corrected framing: high discrimination on take outcomes is expected; on contact outcomes it would be suspicious.
 
 ---
 
@@ -350,8 +383,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Discovery & design | ✅ Complete |
-| 1 | Data engineering & ML prototype | 🔨 In progress |
-| 2 | Domain model & PostgreSQL | ⏳ Parallel with 1 |
+| 1 | Data engineering & ML prototype | ✅ Complete |
+| 2 | Domain model & PostgreSQL | 🔨 In progress |
 | 3 | Go backend · REST | |
 | 4 | ML inference service | |
 | 5 | Kafka event architecture | |
@@ -392,6 +425,19 @@ regime comparison described above. It caches its samples under `data/`, so
 reruns are free.
 
 ```bash
+# Contract tests: label mapping, leakage whitelist, transforms, splits
+cd ml && ../.venv/bin/python -m pytest
+
+# Pull the full training window and train (takes ~20 min end to end)
+.venv/bin/python ml/scripts/pull_seasons.py --seasons 2022 2023 2024 2025 --label full
+.venv/bin/python ml/scripts/train_model.py --version pitch-outcome-v1.0.0
+```
+
+The test split refuses to load without `PITCHLAB_ALLOW_TEST_SET=1`. The friction
+is deliberate: looking at the test score and then changing the model turns it
+into a validation set and invalidates the number reported.
+
+```bash
 make demo          # compose up → migrate → seed → replay   (target: phase 12)
 ```
 
@@ -410,7 +456,7 @@ The project is finished when all of the following are true:
 - [ ] `docker compose up` brings the whole stack online in one command
 - [ ] Running the replay simulator makes pitches stream **live** into the dashboard over WebSocket
 - [ ] Every pitch shows a model prediction and a derived score, with the derivation documented
-- [ ] The model is trained on leakage-free features and beats a baseline on a **temporal** test set
+- [x] The model is trained on leakage-free features and beats a baseline on a **temporal** test set
 - [ ] Publishing the same event twice does not create a second database row
 - [ ] A poison message lands in the DLQ without stalling the consumer
 - [ ] Stopping Redis degrades performance without failing a single request

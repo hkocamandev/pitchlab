@@ -146,8 +146,15 @@ LEAKY_COLUMNS: frozenset[str] = frozenset(
         # future information -- cannot exist at pitch time
         "pitcher_days_until_next_game", "batter_days_until_next_game",
         # identity: memorizing the pitcher is not modeling the pitch
+        #
+        # `pitch_number` is deliberately NOT here. It is the pitch's index
+        # within the plate appearance, which is known before the pitch is
+        # thrown and carries real signal (a 7th pitch is a different situation
+        # from a 1st). It reflects the outcomes of *previous* pitches, which is
+        # legitimate history -- the same status as n_thruorder_pitcher.
+        # `at_bat_number` stays blacklisted: it is a pure identifier.
         "pitcher", "batter", "player_name", "pitcher_1", "fielder_2",
-        "game_pk", "game_date", "game_year", "at_bat_number", "pitch_number",
+        "game_pk", "game_date", "game_year", "at_bat_number",
         "sv_id", "home_team", "away_team",
     }
 )
