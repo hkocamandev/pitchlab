@@ -407,6 +407,34 @@ The pitch is persisted either way, marked as having no prediction, and can be ba
 
 ---
 
+## The event pipeline
+
+Three work topics and two dead-letter queues. Auto-creation is disabled on the broker, because a topic created on demand gets the broker default of one partition — which silently removes the only thing guaranteeing that a session's pitches are processed in order. Failing on a missing topic beats succeeding with a broken guarantee.
+
+One envelope wraps every message, carrying the four things the architecture's guarantees rest on: a correlation id that follows one pitch across every service, a causation id saying which event produced which, a deterministic idempotency key, and a schema version. `occurred_at` and `produced_at` are separate fields — under replay they differ by years, and keeping them apart is what stops a 2025 pitch from being mistaken for something that just happened.
+
+**Delivery is at-least-once and the consumer absorbs it.** Offsets are committed after the work, never before; `FetchMessage` with manual commit rather than `ReadMessage`, which commits for you. A redelivered pitch is recognised by its natural key and skipped. Three deliveries of the same pitch produce one row.
+
+**Errors are classified before they are handled.** Transient failures retry with exponential backoff and jitter — the jitter matters, because when a shared dependency fails every partition's message fails at once and would otherwise retry in lockstep. Permanent failures are never retried: malformed JSON fails identically five times and blocks the partition five times longer. The default is transient, deliberately, since wrongly retrying costs seconds while wrongly discarding loses a pitch.
+
+Retry topics were rejected. They break ordering: pitch 2 lands in a delay topic while pitch 3 flows through normally. In-consumer retry accepts up to ~3s of head-of-line blocking to keep the guarantee.
+
+### Two bugs the tests found
+
+**The dead-letter queue silently dropped malformed messages.** The record embedded the original bytes as a `json.RawMessage`, so encoding it failed whenever the original was not valid JSON — and the queue lost exactly the messages it exists to capture. A test publishing `{"this is not: ` found it. The original bytes are now stored base64-encoded, with a decoded copy attached only when it would not break the encoding.
+
+**kafka-go's package-level transport caches topic metadata process-wide**, so a writer can be told a topic does not exist because a *different* writer looked before it was created. Integration tests passed individually and failed as a suite. Each producer now owns its transport with a one-second metadata TTL — the same staleness would have delayed writes to newly created topics in production.
+
+### Training and serving cannot drift apart
+
+The Go processor and the Python training code both transform raw readings, and they have to agree exactly. If they drift nothing errors — the model just starts receiving features that mean something slightly different from what it was trained on.
+
+A golden fixture pins them together: real pitches are run through the training-time feature code, and a Go test requires a match to 1e-9. The fixture covers all four handedness combinations, because a fixture of only right-on-right pitches would pass with the mirroring inverted — which is how that bug shipped the first time. Inverting the mirroring deliberately produces 69 mismatches, so the test is not passing vacuously.
+
+The leakage defense on the Go side is the shape of a struct: `FeatureInput` has no field for the outcome, so the feature builder cannot be handed one. `pitches.actual_outcome` exists and is written; it simply cannot reach the model.
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out to the browser console.
@@ -465,8 +493,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 2 | Domain model & PostgreSQL | ✅ Complete |
 | 3 | Go backend · REST | ✅ Complete |
 | 4 | ML inference service | ✅ Complete |
-| 5 | Kafka event architecture | 🔨 In progress |
-| 6 | Replay simulator | |
+| 5 | Kafka event architecture | ✅ Complete |
+| 6 | Replay simulator | 🔨 In progress |
 | 7 | WebSocket | |
 | 8 | Redis | |
 | 9 | React dashboard | |
@@ -518,7 +546,8 @@ into a validation set and invalidates the number reported.
 Bring up the database and apply the schema:
 
 ```bash
-make up            # Postgres + Redis
+make up            # Postgres, Redis, Kafka
+make kafka-topics  # 3 work topics + 2 DLQs, explicit partitions and retention
 make migrate-up    # 8 tables, 12 indexes, 38 CHECK constraints
 make seed          # register the replay device and the trained models
 
@@ -528,6 +557,7 @@ make seed          # register the replay device and the trained models
 
 go run ./cmd/api   # http://localhost:8081
 make ml-serve      # http://localhost:8000
+make processor     # the stream processor
 make test-integration
 ```
 
@@ -557,8 +587,8 @@ The project is finished when all of the following are true:
 - [ ] Running the replay simulator makes pitches stream **live** into the dashboard over WebSocket
 - [ ] Every pitch shows a model prediction and a derived score, with the derivation documented
 - [x] The model is trained on leakage-free features and beats a baseline on a **temporal** test set
-- [ ] Publishing the same event twice does not create a second database row
-- [ ] A poison message lands in the DLQ without stalling the consumer
+- [x] Publishing the same event twice does not create a second database row
+- [x] A poison message lands in the DLQ without stalling the consumer
 - [ ] Stopping Redis degrades performance without failing a single request
 - [ ] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
 - [ ] One `correlation_id` traces a single pitch end-to-end across every service log
