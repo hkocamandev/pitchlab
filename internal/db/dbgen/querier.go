@@ -28,6 +28,11 @@ type Querier interface {
 	FindPitchByCorrelationID(ctx context.Context, correlationID *uuid.UUID) ([]Pitch, error)
 	GetActiveModelVersion(ctx context.Context, variant string) (ModelVersion, error)
 	GetActivePredictionsForPitch(ctx context.Context, pitchID uuid.UUID) ([]GetActivePredictionsForPitchRow, error)
+	// Batched form of GetActivePredictionsForPitch.
+	//
+	// The per-pitch query is an N+1 waiting to happen: a 100-pitch timeline page
+	// would issue 100 round trips. One query with an array parameter issues one.
+	GetActivePredictionsForPitches(ctx context.Context, pitchIds []uuid.UUID) ([]GetActivePredictionsForPitchesRow, error)
 	GetAnomaly(ctx context.Context, id uuid.UUID) (PerformanceAnomaly, error)
 	// Trailing per-session medians for one pitcher and pitch type, newest first.
 	//
@@ -46,7 +51,17 @@ type Querier interface {
 	// The KPI strip on the athlete overview page. Expensive enough to be worth
 	// caching in Redis; correct enough to be the fallback when the cache is cold
 	// or unavailable.
+	//
+	// Every aggregate is wrapped in COALESCE and cast explicitly. Two reasons:
+	// sqlc infers a bare aggregate as non-nullable, which panics when scanning
+	// the NULL an empty group produces, and it mis-infers the integer division
+	// guard as an integer type. The handler suppresses these values when
+	// pitch_count is zero, which is the only case where the zero is a lie.
 	GetAthleteSummary(ctx context.Context, arg GetAthleteSummaryParams) (GetAthleteSummaryRow, error)
+	// first_pitch_at and last_pitch_at are genuinely NULL for an athlete with no
+	// pitches. They are left uncast: an explicit ::timestamptz makes sqlc emit a
+	// non-pointer time.Time, which then fails at scan time on exactly the rows
+	// that need handling. The interface{} sqlc infers is converted in the handler.
 	GetAthleteTotals(ctx context.Context, pitcherAthleteID uuid.UUID) (GetAthleteTotalsRow, error)
 	GetDeviceByKey(ctx context.Context, deviceKey string) (Device, error)
 	GetModelVersion(ctx context.Context, id uuid.UUID) (ModelVersion, error)

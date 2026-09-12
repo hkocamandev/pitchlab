@@ -90,7 +90,11 @@ test: ## Run Go tests with the race detector
 
 .PHONY: test-integration
 test-integration: ## Run tests that need a live database
-	PITCHLAB_TEST_DATABASE_URL="$(DATABASE_URL)" go test -race -tags=integration ./...
+	@# -p 1 is required: integration packages share one database and each
+	@# truncates it between tests. Running packages in parallel makes them
+	@# delete each other's fixtures, and concurrent TRUNCATEs deadlock.
+	PITCHLAB_TEST_DATABASE_URL="$(DATABASE_URL)" \
+		go test -race -tags=integration -p 1 ./...
 
 .PHONY: vet
 vet: ## Run go vet

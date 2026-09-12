@@ -82,3 +82,15 @@ FROM pitch_predictions pr
 JOIN model_versions mv ON mv.id = pr.model_version_id
 WHERE pr.pitch_id = $1 AND mv.is_active
 ORDER BY mv.variant;
+
+-- name: GetActivePredictionsForPitches :many
+-- Batched form of GetActivePredictionsForPitch.
+--
+-- The per-pitch query is an N+1 waiting to happen: a 100-pitch timeline page
+-- would issue 100 round trips. One query with an array parameter issues one.
+SELECT sqlc.embed(pr), sqlc.embed(mv)
+FROM pitch_predictions pr
+JOIN model_versions mv ON mv.id = pr.model_version_id
+WHERE pr.pitch_id = ANY(sqlc.arg('pitch_ids')::uuid[])
+  AND mv.is_active
+ORDER BY pr.pitch_id, mv.variant;

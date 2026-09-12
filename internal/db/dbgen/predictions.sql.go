@@ -121,6 +121,76 @@ func (q *Queries) GetActivePredictionsForPitch(ctx context.Context, pitchID uuid
 	return items, nil
 }
 
+const getActivePredictionsForPitches = `-- name: GetActivePredictionsForPitches :many
+SELECT pr.id, pr.pitch_id, pr.model_version_id, pr.probabilities, pr.predicted_class, pr.whiff_probability, pr.scored_quantity, pr.score, pr.inference_ms, pr.created_at, mv.id, mv.version, mv.variant, mv.target, mv.algorithm, mv.feature_columns, mv.class_labels, mv.run_value_table, mv.score_mu, mv.score_sigma, mv.train_period_start, mv.train_period_end, mv.val_period_start, mv.val_period_end, mv.test_period_start, mv.test_period_end, mv.data_snapshot, mv.git_sha, mv.metrics, mv.is_active, mv.created_at
+FROM pitch_predictions pr
+JOIN model_versions mv ON mv.id = pr.model_version_id
+WHERE pr.pitch_id = ANY($1::uuid[])
+  AND mv.is_active
+ORDER BY pr.pitch_id, mv.variant
+`
+
+type GetActivePredictionsForPitchesRow struct {
+	PitchPrediction PitchPrediction
+	ModelVersion    ModelVersion
+}
+
+// Batched form of GetActivePredictionsForPitch.
+//
+// The per-pitch query is an N+1 waiting to happen: a 100-pitch timeline page
+// would issue 100 round trips. One query with an array parameter issues one.
+func (q *Queries) GetActivePredictionsForPitches(ctx context.Context, pitchIds []uuid.UUID) ([]GetActivePredictionsForPitchesRow, error) {
+	rows, err := q.db.Query(ctx, getActivePredictionsForPitches, pitchIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetActivePredictionsForPitchesRow{}
+	for rows.Next() {
+		var i GetActivePredictionsForPitchesRow
+		if err := rows.Scan(
+			&i.PitchPrediction.ID,
+			&i.PitchPrediction.PitchID,
+			&i.PitchPrediction.ModelVersionID,
+			&i.PitchPrediction.Probabilities,
+			&i.PitchPrediction.PredictedClass,
+			&i.PitchPrediction.WhiffProbability,
+			&i.PitchPrediction.ScoredQuantity,
+			&i.PitchPrediction.Score,
+			&i.PitchPrediction.InferenceMs,
+			&i.PitchPrediction.CreatedAt,
+			&i.ModelVersion.ID,
+			&i.ModelVersion.Version,
+			&i.ModelVersion.Variant,
+			&i.ModelVersion.Target,
+			&i.ModelVersion.Algorithm,
+			&i.ModelVersion.FeatureColumns,
+			&i.ModelVersion.ClassLabels,
+			&i.ModelVersion.RunValueTable,
+			&i.ModelVersion.ScoreMu,
+			&i.ModelVersion.ScoreSigma,
+			&i.ModelVersion.TrainPeriodStart,
+			&i.ModelVersion.TrainPeriodEnd,
+			&i.ModelVersion.ValPeriodStart,
+			&i.ModelVersion.ValPeriodEnd,
+			&i.ModelVersion.TestPeriodStart,
+			&i.ModelVersion.TestPeriodEnd,
+			&i.ModelVersion.DataSnapshot,
+			&i.ModelVersion.GitSha,
+			&i.ModelVersion.Metrics,
+			&i.ModelVersion.IsActive,
+			&i.ModelVersion.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getModelVersion = `-- name: GetModelVersion :one
 SELECT id, version, variant, target, algorithm, feature_columns, class_labels, run_value_table, score_mu, score_sigma, train_period_start, train_period_end, val_period_start, val_period_end, test_period_start, test_period_end, data_snapshot, git_sha, metrics, is_active, created_at FROM model_versions WHERE id = $1
 `

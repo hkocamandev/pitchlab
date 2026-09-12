@@ -45,8 +45,12 @@ ORDER BY a.full_name, a.id
 LIMIT $1;
 
 -- name: GetAthleteTotals :one
+-- first_pitch_at and last_pitch_at are genuinely NULL for an athlete with no
+-- pitches. They are left uncast: an explicit ::timestamptz makes sqlc emit a
+-- non-pointer time.Time, which then fails at scan time on exactly the rows
+-- that need handling. The interface{} sqlc infers is converted in the handler.
 SELECT
-    (SELECT count(*) FROM sessions s WHERE s.pitcher_athlete_id = $1) AS session_count,
-    (SELECT count(*) FROM pitches p  WHERE p.pitcher_athlete_id = $1) AS pitch_count,
+    (SELECT count(*) FROM sessions s WHERE s.pitcher_athlete_id = $1)::bigint AS session_count,
+    (SELECT count(*) FROM pitches p  WHERE p.pitcher_athlete_id = $1)::bigint AS pitch_count,
     (SELECT min(p.thrown_at) FROM pitches p WHERE p.pitcher_athlete_id = $1) AS first_pitch_at,
     (SELECT max(p.thrown_at) FROM pitches p WHERE p.pitcher_athlete_id = $1) AS last_pitch_at;

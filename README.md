@@ -351,6 +351,28 @@ The remaining twelve indexes each have a test that makes the planner name it in 
 
 ---
 
+## The API
+
+`/api/v1`, served by Go's own `net/http` mux — since 1.22 it routes on method and path patterns, so a third-party router would be a dependency taken on for syntax.
+
+A few decisions are worth stating because they are the ones a reviewer would push on.
+
+**`GET /pitches` requires `pitcher_id`.** Without it the query is a sequential scan over millions of rows. Refusing to express the expensive query is cheaper than finding it in production and optimizing afterwards — the endpoint returns 400 and names the missing filter.
+
+**Pagination is keyset, and the cursor always carries an id.** Offsets shift under a table that is appended to continuously, so pages repeat or skip rows. The id tiebreaker is not decoration: replay can emit several pitches with the same timestamp, and paginating on time alone silently drops all but one at a page boundary. `HasMore` comes from fetching one row past the limit, because a `COUNT` over this table would cost as much as the page.
+
+**`POST /sessions/{id}/close` is an action, not a `PATCH`.** It is a state transition with side effects — it triggers anomaly evaluation and lets live session state expire. `PATCH {"status": "COMPLETED"}` would disguise that as a field update. Calling it twice returns 409, not a silent success and not a 404: "already done" and "never existed" are different answers.
+
+**Empty aggregates are null, not zero.** SQL returns 0 for `avg()` over no rows. Reporting that as a measurement would claim a pitcher throws 0 mph. The response omits the value and the client can say so.
+
+**`/healthz` checks nothing.** If liveness probed the database, one slow query would mark every instance unhealthy, the orchestrator would restart them together, and a blip would become an outage. `/readyz` does the dependency checking — and reports Redis as `degraded` while still returning 200, because a cache outage must not take the API out of rotation.
+
+**Every error is an RFC 7807 problem document carrying a request id**, so a user report maps to a log line. Internal error text never reaches the client; it goes to the logs under the same id.
+
+Request id and correlation id are deliberately separate headers. One covers a single HTTP request; the other follows one pitch across every service and topic, from the replay simulator to the browser console.
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out to the browser console.
@@ -407,8 +429,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 0 | Discovery & design | ✅ Complete |
 | 1 | Data engineering & ML prototype | ✅ Complete |
 | 2 | Domain model & PostgreSQL | ✅ Complete |
-| 3 | Go backend · REST | 🔨 In progress |
-| 4 | ML inference service | |
+| 3 | Go backend · REST | ✅ Complete |
+| 4 | ML inference service | 🔨 In progress |
 | 5 | Kafka event architecture | |
 | 6 | Replay simulator | |
 | 7 | WebSocket | |
@@ -466,7 +488,18 @@ make up            # Postgres + Redis
 make migrate-up    # 8 tables, 12 indexes, 38 CHECK constraints
 make seed          # register the replay device and the trained models
 
-make test-integration   # schema behaviour against a real database
+# Load real pitches so the API has something to serve. This is a temporary
+# bridge; the replay simulator replaces it in phase 6.
+.venv/bin/python ml/scripts/load_to_postgres.py --sessions 20
+
+go run ./cmd/api   # http://localhost:8081
+make test-integration
+```
+
+```bash
+curl localhost:8081/readyz
+curl 'localhost:8081/api/v1/athletes?limit=5'
+curl "localhost:8081/api/v1/athletes/$ID/analytics"
 ```
 
 ```bash
