@@ -329,6 +329,28 @@ The hub writes non-blocking, so one slow client never stalls the broadcast.
 
 ---
 
+## The schema, and what the tests proved about it
+
+Eight tables. The two entities that are *absent* matter as much as the ones present: `Pitcher` and `Batter` are roles expressed through foreign keys on `pitches`, not separate tables, because the same person can do both and MLBAM itself uses one player id. `Game` and `PlateAppearance` would add a join layer without enabling a single query.
+
+Correctness lives in the database rather than in application code, because that is the only layer that can enforce it under concurrency:
+
+- **Idempotency** is a unique constraint on `external_pitch_uid` plus `ON CONFLICT DO NOTHING`. Kafka delivers at least once, so a redelivered pitch is routine, not exceptional. A select-then-insert would race between processor instances; a constraint does not.
+- **The rulebook** is CHECK constraints. `balls BETWEEN 0 AND 3`, `release_speed BETWEEN 40 AND 110`. A device reporting five balls is reporting a fault, and it is stopped at write time rather than found later in a training set.
+- **One active model per variant** is a partial unique index on `(variant) WHERE is_active`, not an application-level deactivate-then-activate, which two concurrent deployments could interleave.
+
+Three of these were rewritten because a test disproved the original design:
+
+**A redundant unique constraint broke the thing it was meant to protect.** `(session_id, at_bat_number, pitch_number)` was added as a second line of defence. But `ON CONFLICT` names a single arbiter index, so a redelivered pitch — which collides on *both* constraints — resolved cleanly against the uid and then raised a hard error on the other one when two consumers raced. A 16-goroutine concurrency test surfaced it. The constraint was also nearly redundant, since an at-bat has exactly one pitcher. It was removed.
+
+**A data-modifying CTE cannot express "then".** Model activation was written as one statement: a CTE deactivating the incumbent, then an UPDATE activating the successor. PostgreSQL runs every CTE against the same snapshot, so the deactivation was invisible to the activation and the partial unique index rejected the write. It is now two statements in one transaction — and the index still makes two concurrent activations impossible rather than merely unlikely.
+
+**An index nothing used was deleted.** A catalogue-level test resets `pg_stat`, runs every real access pattern, and reports any index the planner never touched. `ix_meas_speed` never registered a scan: velocity filters drive off the pitcher index and then join measurements by primary key. An index no query uses costs every write and returns nothing, so it went.
+
+The remaining twelve indexes each have a test that makes the planner name it in an `EXPLAIN (ANALYZE)` plan. Getting those tests to mean anything required fixing the fixture twice — with two pitchers, one pitcher is half the table and a sequential scan is genuinely the better plan, so the test was measuring the fixture rather than the schema.
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out to the browser console.
@@ -384,8 +406,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 |---|---|---|
 | 0 | Discovery & design | ✅ Complete |
 | 1 | Data engineering & ML prototype | ✅ Complete |
-| 2 | Domain model & PostgreSQL | 🔨 In progress |
-| 3 | Go backend · REST | |
+| 2 | Domain model & PostgreSQL | ✅ Complete |
+| 3 | Go backend · REST | 🔨 In progress |
 | 4 | ML inference service | |
 | 5 | Kafka event architecture | |
 | 6 | Replay simulator | |
@@ -436,6 +458,16 @@ cd ml && ../.venv/bin/python -m pytest
 The test split refuses to load without `PITCHLAB_ALLOW_TEST_SET=1`. The friction
 is deliberate: looking at the test score and then changing the model turns it
 into a validation set and invalidates the number reported.
+
+Bring up the database and apply the schema:
+
+```bash
+make up            # Postgres + Redis
+make migrate-up    # 8 tables, 12 indexes, 38 CHECK constraints
+make seed          # register the replay device and the trained models
+
+make test-integration   # schema behaviour against a real database
+```
 
 ```bash
 make demo          # compose up → migrate → seed → replay   (target: phase 12)

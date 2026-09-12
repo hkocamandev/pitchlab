@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS model_versions;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS athletes;

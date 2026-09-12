@@ -1,0 +1,57 @@
+name: pitchlab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pitchlab-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pitchlab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pitchlab}
+      POSTGRES_DB: ${POSTGRES_DB:-pitchlab}
+      # Statcast is a read-heavy analytical workload; give the planner room.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=32MB
+      - -c
+      - max_connections=100
+      # Log anything slow enough to matter, so index regressions surface.
+      - -c
+      - log_min_duration_statement=200
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pitchlab} -d ${POSTGRES_DB:-pitchlab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: pitchlab-redis
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
