@@ -88,14 +88,28 @@ const getAnomalyBaselineWindow = `-- name: GetAnomalyBaselineWindow :many
 SELECT
     s.id                                    AS session_id,
     s.started_at,
-    count(*)                                AS pitch_count,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_speed)     AS median_release_speed,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_spin_rate) AS median_release_spin_rate,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_x_arm) AS median_release_pos_x_arm,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_z)     AS median_release_pos_z,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_extension) AS median_release_extension,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_x_arm)         AS median_pfx_x_arm,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_z)             AS median_pfx_z
+    count(*)::bigint                        AS pitch_count,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_speed), 0)::float8
+                                            AS median_release_speed,
+    count(m.release_speed)::bigint              AS n_release_speed,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_spin_rate), 0)::float8
+                                            AS median_release_spin_rate,
+    count(m.release_spin_rate)::bigint          AS n_release_spin_rate,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_x_arm), 0)::float8
+                                            AS median_release_pos_x_arm,
+    count(m.release_pos_x_arm)::bigint          AS n_release_pos_x_arm,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_z), 0)::float8
+                                            AS median_release_pos_z,
+    count(m.release_pos_z)::bigint              AS n_release_pos_z,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_extension), 0)::float8
+                                            AS median_release_extension,
+    count(m.release_extension)::bigint          AS n_release_extension,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_x_arm), 0)::float8
+                                            AS median_pfx_x_arm,
+    count(m.pfx_x_arm)::bigint                  AS n_pfx_x_arm,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_z), 0)::float8
+                                            AS median_pfx_z,
+    count(m.pfx_z)::bigint                      AS n_pfx_z
 FROM sessions s
 JOIN pitches p            ON p.session_id = s.id
 JOIN pitch_measurements m ON m.pitch_id = p.id
@@ -122,15 +136,28 @@ type GetAnomalyBaselineWindowRow struct {
 	StartedAt              time.Time
 	PitchCount             int64
 	MedianReleaseSpeed     float64
+	NReleaseSpeed          int64
 	MedianReleaseSpinRate  float64
+	NReleaseSpinRate       int64
 	MedianReleasePosXArm   float64
+	NReleasePosXArm        int64
 	MedianReleasePosZ      float64
+	NReleasePosZ           int64
 	MedianReleaseExtension float64
+	NReleaseExtension      int64
 	MedianPfxXArm          float64
+	NPfxXArm               int64
 	MedianPfxZ             float64
+	NPfxZ                  int64
 }
 
 // Trailing per-session medians for one pitcher and pitch type, newest first.
+//
+// Each median is paired with a count of the readings behind it. percentile_cont
+// over an empty set is NULL, and sqlc infers these as non-nullable, so scanning
+// one would panic. COALESCE keeps the scan safe, and the count is what tells the
+// caller whether the zero means "zero" or "nothing to measure" -- a distinction
+// a sentinel value could not carry.
 //
 // This feeds the robust z-score: median and MAD over the previous N sessions.
 // Median rather than mean, and MAD rather than standard deviation, because a
@@ -157,12 +184,19 @@ func (q *Queries) GetAnomalyBaselineWindow(ctx context.Context, arg GetAnomalyBa
 			&i.StartedAt,
 			&i.PitchCount,
 			&i.MedianReleaseSpeed,
+			&i.NReleaseSpeed,
 			&i.MedianReleaseSpinRate,
+			&i.NReleaseSpinRate,
 			&i.MedianReleasePosXArm,
+			&i.NReleasePosXArm,
 			&i.MedianReleasePosZ,
+			&i.NReleasePosZ,
 			&i.MedianReleaseExtension,
+			&i.NReleaseExtension,
 			&i.MedianPfxXArm,
+			&i.NPfxXArm,
 			&i.MedianPfxZ,
+			&i.NPfxZ,
 		); err != nil {
 			return nil, err
 		}
@@ -176,14 +210,28 @@ func (q *Queries) GetAnomalyBaselineWindow(ctx context.Context, arg GetAnomalyBa
 
 const getSessionMetricMedians = `-- name: GetSessionMetricMedians :one
 SELECT
-    count(*)                                AS pitch_count,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_speed)     AS median_release_speed,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_spin_rate) AS median_release_spin_rate,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_x_arm) AS median_release_pos_x_arm,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_z)     AS median_release_pos_z,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_extension) AS median_release_extension,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_x_arm)         AS median_pfx_x_arm,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_z)             AS median_pfx_z
+    count(*)::bigint                        AS pitch_count,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_speed), 0)::float8
+                                            AS median_release_speed,
+    count(m.release_speed)::bigint              AS n_release_speed,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_spin_rate), 0)::float8
+                                            AS median_release_spin_rate,
+    count(m.release_spin_rate)::bigint          AS n_release_spin_rate,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_x_arm), 0)::float8
+                                            AS median_release_pos_x_arm,
+    count(m.release_pos_x_arm)::bigint          AS n_release_pos_x_arm,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_pos_z), 0)::float8
+                                            AS median_release_pos_z,
+    count(m.release_pos_z)::bigint              AS n_release_pos_z,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.release_extension), 0)::float8
+                                            AS median_release_extension,
+    count(m.release_extension)::bigint          AS n_release_extension,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_x_arm), 0)::float8
+                                            AS median_pfx_x_arm,
+    count(m.pfx_x_arm)::bigint                  AS n_pfx_x_arm,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY m.pfx_z), 0)::float8
+                                            AS median_pfx_z,
+    count(m.pfx_z)::bigint                      AS n_pfx_z
 FROM pitches p
 JOIN pitch_measurements m ON m.pitch_id = p.id
 WHERE p.session_id = $1
@@ -199,12 +247,19 @@ type GetSessionMetricMediansParams struct {
 type GetSessionMetricMediansRow struct {
 	PitchCount             int64
 	MedianReleaseSpeed     float64
+	NReleaseSpeed          int64
 	MedianReleaseSpinRate  float64
+	NReleaseSpinRate       int64
 	MedianReleasePosXArm   float64
+	NReleasePosXArm        int64
 	MedianReleasePosZ      float64
+	NReleasePosZ           int64
 	MedianReleaseExtension float64
+	NReleaseExtension      int64
 	MedianPfxXArm          float64
+	NPfxXArm               int64
 	MedianPfxZ             float64
+	NPfxZ                  int64
 }
 
 // The session under evaluation, shaped like one row of the baseline window.
@@ -214,12 +269,19 @@ func (q *Queries) GetSessionMetricMedians(ctx context.Context, arg GetSessionMet
 	err := row.Scan(
 		&i.PitchCount,
 		&i.MedianReleaseSpeed,
+		&i.NReleaseSpeed,
 		&i.MedianReleaseSpinRate,
+		&i.NReleaseSpinRate,
 		&i.MedianReleasePosXArm,
+		&i.NReleasePosXArm,
 		&i.MedianReleasePosZ,
+		&i.NReleasePosZ,
 		&i.MedianReleaseExtension,
+		&i.NReleaseExtension,
 		&i.MedianPfxXArm,
+		&i.NPfxXArm,
 		&i.MedianPfxZ,
+		&i.NPfxZ,
 	)
 	return i, err
 }

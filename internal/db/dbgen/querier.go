@@ -36,6 +36,12 @@ type Querier interface {
 	GetAnomaly(ctx context.Context, id uuid.UUID) (PerformanceAnomaly, error)
 	// Trailing per-session medians for one pitcher and pitch type, newest first.
 	//
+	// Each median is paired with a count of the readings behind it. percentile_cont
+	// over an empty set is NULL, and sqlc infers these as non-nullable, so scanning
+	// one would panic. COALESCE keeps the scan safe, and the count is what tells the
+	// caller whether the zero means "zero" or "nothing to measure" -- a distinction
+	// a sentinel value could not carry.
+	//
 	// This feeds the robust z-score: median and MAD over the previous N sessions.
 	// Median rather than mean, and MAD rather than standard deviation, because a
 	// single injury outing inside the window would otherwise inflate sigma and
