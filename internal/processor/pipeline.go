@@ -223,6 +223,7 @@ func (p *Pipeline) predict(
 		Stand:       raw.Batter.Stand,
 		PThrows:     raw.Session.PThrows,
 		PitchType:   raw.Measurement.PitchType,
+		PitchNumber: raw.PitchNumber,
 	}
 
 	var out []events.PredictionResult
@@ -230,7 +231,6 @@ func (p *Pipeline) predict(
 		mlclient.VariantPitching, mlclient.VariantStuff,
 	} {
 		features := BuildFeatures(input, variant)
-		addSequenceFeatures(features, raw.PitchNumber, nil)
 
 		start := time.Now()
 		resp, err := p.ml.Predict(ctx, variant, []mlclient.PitchFeatures{{
