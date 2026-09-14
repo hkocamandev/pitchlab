@@ -124,12 +124,78 @@ services:
       - ./models:/models:ro
     ports:
       - "${PITCHLAB_ML_PORT:-8000}:8000"
+    profiles: ["app", "ml"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 30s
+
+  api:
+    # One image, six binaries. Which one runs is chosen here rather than at
+    # build time, so the processor and the API can never drift out of step
+    # with the domain model they share.
+    build:
+      context: .
+      args:
+        VERSION: ${PITCHLAB_VERSION:-dev}
+    image: pitchlab-go:${PITCHLAB_VERSION:-dev}
+    container_name: pitchlab-api
+    entrypoint: ["/usr/local/bin/api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      # Redis is listed but not waited on: the API starts without it by
+      # design, and making it a startup condition would quietly turn a cache
+      # into a dependency.
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-pitchlab}:${POSTGRES_PASSWORD:-pitchlab}@postgres:5432/${POSTGRES_DB:-pitchlab}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: kafka:9092
+      PITCHLAB_ML_URL: http://pitchlab-ml:8000
+      PITCHLAB_API_ADDR: ":8081"
+      PITCHLAB_ALLOWED_ORIGINS: http://localhost:5174,http://localhost:5173
+      PITCHLAB_LOG_LEVEL: ${PITCHLAB_LOG_LEVEL:-info}
+      PITCHLAB_VERSION: ${PITCHLAB_VERSION:-dev}
+    ports:
+      - "${PITCHLAB_API_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    profiles: ["app"]
+
+  processor:
+    # Deliberately no build section: it runs the same image as the API, and
+    # two services declaring the same tag makes the builder refuse to write it
+    # twice. `docker compose build` builds it once, under api, and this
+    # service just picks it up.
+    image: pitchlab-go:${PITCHLAB_VERSION:-dev}
+    container_name: pitchlab-processor
+    entrypoint: ["/usr/local/bin/processor"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-pitchlab}:${POSTGRES_PASSWORD:-pitchlab}@postgres:5432/${POSTGRES_DB:-pitchlab}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BROKERS: kafka:9092
+      PITCHLAB_ML_URL: http://pitchlab-ml:8000
+      PITCHLAB_PROCESSOR_METRICS_ADDR: ":9091"
+      PITCHLAB_LOG_LEVEL: ${PITCHLAB_LOG_LEVEL:-info}
+      PITCHLAB_VERSION: ${PITCHLAB_VERSION:-dev}
+    ports:
+      - "${PITCHLAB_PROCESSOR_PORT:-9091}:9091"
+    profiles: ["app"]
 
   web:
     # The dashboard is a static bundle behind nginx, which also proxies the API
@@ -138,9 +204,11 @@ services:
     build:
       context: ./web
     container_name: pitchlab-web
+    depends_on:
+      - api
     ports:
       - "${PITCHLAB_WEB_PORT:-5174}:8080"
-    profiles: ["web"]
+    profiles: ["app", "web"]
 
   prometheus:
     image: prom/prometheus:v3.1.0

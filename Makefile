@@ -16,6 +16,13 @@ PROMETHEUS_PORT ?= 9090
 GRAFANA_PORT    ?= 3000
 LOG_DIR         ?= .
 
+# Demo defaults. The seed is fixed, so a rehearsed demo replays identically.
+DEMO_SESSIONS ?= 4
+DEMO_SPEED    ?= 25
+DEMO_TAPE     ?= data/processed/replay_tape_$(SEASON)_$(DEMO_SESSIONS).ndjson
+PITCHLAB_API_PORT ?= 8081
+PITCHLAB_WEB_PORT ?= 5174
+
 MIGRATE_IMAGE := migrate/migrate:v4.18.1
 MIGRATE := docker run --rm --network host \
 	-v "$(PWD)/migrations:/migrations" $(MIGRATE_IMAGE) \
@@ -109,6 +116,53 @@ processor: ## Run the stream processor
 .PHONY: dlq
 dlq: ## Show what is sitting in the raw-pitch dead-letter queue
 	go run ./cmd/dlq-replay --dlq pitchlab.pitch.raw.v1.dlq --dry-run --timeout 5s
+
+.PHONY: demo
+demo: ## The whole system, from nothing, in one command
+	@# Ordered by what has to exist before what: infrastructure, then the
+	@# schema, then the models the processor needs to score anything, then the
+	@# application, and only then the traffic. Running the replay before the
+	@# processor is listening would publish into a topic nobody is reading and
+	@# look like the pipeline was broken.
+	@echo "==> 1/6  infrastructure (postgres, redis, kafka)   ~30s on a cold start"
+	@docker compose up -d postgres redis kafka
+	@$(MAKE) --no-print-directory wait-db
+	@$(MAKE) --no-print-directory wait-kafka
+	@echo "==> 2/6  topics"
+	@$(MAKE) --no-print-directory kafka-topics
+	@echo "==> 3/6  schema"
+	@$(MAKE) --no-print-directory migrate-up
+	@echo "==> 4/6  building images                            ~2min on a cold start"
+	@docker compose --profile app build
+	@echo "==> 5/6  services (inference, processor, api, dashboard)"
+	@docker compose --profile app up -d
+	@$(MAKE) --no-print-directory wait-api
+	@$(MAKE) --no-print-directory seed
+	@echo "==> 6/6  replaying $(DEMO_SESSIONS) outings at $(DEMO_SPEED)x"
+	@$(MAKE) --no-print-directory demo-replay
+	@echo ""
+	@echo "  dashboard   http://localhost:$(PITCHLAB_WEB_PORT)"
+	@echo "  api         http://localhost:$(PITCHLAB_API_PORT)/api/v1/athletes"
+	@echo "  grafana     make observability, then http://localhost:$(GRAFANA_PORT)"
+	@echo ""
+	@echo "  the replay is running in the background; watch it with:"
+	@echo "    docker compose logs -f processor"
+
+.PHONY: demo-replay
+demo-replay: ## Replay into the containerised stack
+	@# The tape is built on the host, because it needs the dataset, which is
+	@# deliberately not in any image.
+	@test -f $(DEMO_TAPE) || $(VENV) ml/scripts/export_replay_tape.py 		--season $(SEASON) --sessions $(DEMO_SESSIONS)
+	@docker compose run --rm --no-deps 		-v "$(PWD)/$(DEMO_TAPE):/tape.ndjson:ro" 		-e KAFKA_BROKERS=kafka:9092 		--entrypoint /usr/local/bin/replay 		api --tape /tape.ndjson --speed $(DEMO_SPEED) --sessions $(DEMO_SESSIONS) &
+
+.PHONY: wait-api
+wait-api:
+	@echo -n "    waiting for the api"
+	@for i in $$(seq 1 60); do 		if curl -sf http://localhost:$(PITCHLAB_API_PORT)/healthz >/dev/null 2>&1; then 			echo " ok"; exit 0; fi; 		echo -n "."; sleep 2; done; 	echo " timed out"; docker compose --profile app logs api | tail -20; exit 1
+
+.PHONY: demo-down
+demo-down: ## Stop everything the demo started, keeping the data
+	docker compose --profile app --profile observability down
 
 .PHONY: tape
 tape: ## Export a device-shaped replay tape from historical pitches
