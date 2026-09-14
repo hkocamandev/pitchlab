@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-phases%200%E2%80%9311%20complete-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-complete-brightgreen)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -820,7 +820,7 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 9 | React dashboard | ✅ Complete |
 | 10 | Observability | ✅ Complete |
 | 11 | Hardening · chaos, load, security | ✅ Complete |
-| 12 | Demo & documentation | 🔨 In progress |
+| 12 | Demo & documentation | ✅ Complete |
 
 Each phase produces something demonstrable on its own — no phase leaves an intermediate artifact that "only makes sense next time."
 
@@ -830,10 +830,40 @@ Three tests are non-negotiable and will not be cut under time pressure: the **le
 
 ## Getting started
 
-The full stack lands over phases 2–12. What runs today is the ML pipeline.
+### One command
 
 ```bash
 git clone <repo-url> && cd pitchlab
+make demo
+```
+
+That brings up PostgreSQL, Redis and Kafka, creates the topics, applies the
+schema, builds the images, starts the inference service, the stream processor,
+the API and the dashboard, registers the models, and replays four outings into
+the pipeline — in that order, because running the replay before the processor
+is listening would publish into a topic nobody is reading and look like the
+pipeline was broken.
+
+About three minutes cold, about twenty seconds once the images are built.
+
+| | |
+|---|---|
+| Dashboard | http://localhost:5174 |
+| API | http://localhost:8081/api/v1/athletes |
+| Metrics | http://localhost:8081/metrics · http://localhost:9091/metrics |
+
+```bash
+make observability   # Prometheus on :9090, Grafana on :3000, five dashboards
+make demo-down       # stop everything, keep the data
+```
+
+The replay needs a tape, and a tape needs the dataset — which is deliberately
+in no image. `make demo` builds one on first run; that step needs the Python
+environment below.
+
+### Working on it
+
+```bash
 
 # macOS: LightGBM needs the OpenMP runtime
 brew install libomp
@@ -963,10 +993,6 @@ curl 'localhost:8081/api/v1/athletes?limit=5'
 curl "localhost:8081/api/v1/athletes/$ID/analytics"
 ```
 
-```bash
-make demo          # compose up → migrate → seed → replay   (target: phase 12)
-```
-
 **Prerequisites:** Go 1.25+, Python 3.12+, Node 20+, Docker with Compose v2.
 
 > `pandas` is pinned below 3.0: `pybaseball` declares an unbounded
@@ -975,11 +1001,25 @@ make demo          # compose up → migrate → seed → replay   (target: phase
 
 ---
 
+## Where the reasoning lives
+
+The design documents are Turkish and local to the working tree; this README is
+the English summary of them. What is public here is the code, the tests and
+this file.
+
+What the repository does carry, for anyone reading the source:
+
+- `CHANGELOG.md` — one entry per phase, including the bugs each one found
+- every non-obvious decision is argued in a comment next to the code it
+  governs, including the ones that were rejected and why
+
+---
+
 ## Success criteria
 
 The project is finished when all of the following are true:
 
-- [ ] `docker compose up` brings the whole stack online in one command
+- [x] `make demo` brings the whole stack online in one command
 - [x] Running the replay simulator makes pitches stream **live** into the dashboard over WebSocket
 - [x] Every pitch shows a model prediction and a derived score, with the derivation documented
 - [x] The model is trained on leakage-free features and beats a baseline on a **temporal** test set

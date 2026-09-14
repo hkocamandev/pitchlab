@@ -1,0 +1,23 @@
+# Build context hygiene.
+#
+# The Go image and the inference image both build from the repository root, so
+# this file applies to both: it can exclude what neither needs, and nothing
+# either one does. `ml/` and `web/` stay, because the inference image copies
+# `ml/` and excluding it fails the build with a confusing "not found".
+#
+# What is excluded is what would be expensive or wrong to ship: the dataset is
+# hundreds of megabytes and is licensed for individual use, the models are
+# mounted at runtime rather than baked in, and the virtualenv and node_modules
+# are built inside the images from their lockfiles.
+.git
+.github
+.idea
+data
+models
+docs
+.venv
+**/node_modules
+web/dist
+*.parquet
+*.ndjson
+*.csv
