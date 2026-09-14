@@ -30,8 +30,10 @@ from fastapi.responses import JSONResponse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config, runvalue  # noqa: E402
-from ml.service import artifacts, metrics as obs, schemas  # noqa: E402
+from pitchlab_ml import config, runvalue
+
+from ml.service import artifacts, schemas
+from ml.service import metrics as obs
 
 logging.basicConfig(
     level=os.getenv("PITCHLAB_LOG_LEVEL", "INFO").upper(),

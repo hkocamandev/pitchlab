@@ -76,7 +76,7 @@ def fetch_range(
         try:
             log.info("fetching statcast %s..%s (attempt %d)", start, end, attempt)
             return _fetch_once(start, end, verbose=verbose)
-        except Exception as exc:  # noqa: BLE001 - the failure modes are varied
+        except Exception as exc:
             if attempt == attempts:
                 log.warning("range %s..%s failed after %d attempts: %s",
                             start, end, attempts, exc)
@@ -100,7 +100,7 @@ def fetch_range(
                 fetch_range(iso, iso, verbose=False, attempts=3,
                             split_on_failure=False)
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.error("skipping %s: %s", iso, exc)
             skipped.append(iso)
         day += timedelta(days=1)

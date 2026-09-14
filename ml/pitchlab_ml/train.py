@@ -14,7 +14,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import lightgbm as lgb
@@ -55,7 +55,7 @@ def _git_sha() -> str | None:
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=config.REPO_ROOT, stderr=subprocess.DEVNULL, text=True,
         ).strip()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -101,7 +101,7 @@ class TrainedModel:
             "score_scaler": self.scaler.to_dict(),
             "metrics": self.metrics,
             "git_sha": _git_sha(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         if self.rv_table is not None:
             card["class_labels"] = list(config.CLASS_LABELS)

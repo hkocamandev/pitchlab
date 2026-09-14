@@ -19,7 +19,7 @@
     {
       "type": "stat",
       "title": "Hit ratio",
-      "description": "Errors are excluded from the denominator: with Redis down every operation fails, and counting those as misses would read as a cache that is merely cold.",
+      "description": "Errors and writes are both excluded from the denominator. With Redis down every operation fails, and counting those as misses would read as a cache that is merely cold; counting successful writes as hits would inflate the ratio with operations that were never lookups.",
       "datasource": {
         "type": "prometheus",
         "uid": "pitchlab-prometheus"

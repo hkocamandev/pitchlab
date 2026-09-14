@@ -18,6 +18,7 @@ import (
 func (m *Metrics) ConsumerHooks() (
 	onProcessed func(topic string, class string, attempts int, d time.Duration),
 	onDLQ func(topic, errorClass string),
+	onFetchError func(topic string),
 ) {
 	onProcessed = func(topic string, class string, _ int, d time.Duration) {
 		m.KafkaConsumed.WithLabelValues(topic, class).Inc()
@@ -26,7 +27,10 @@ func (m *Metrics) ConsumerHooks() (
 	onDLQ = func(topic, errorClass string) {
 		m.KafkaDLQ.WithLabelValues(topic, errorClass).Inc()
 	}
-	return onProcessed, onDLQ
+	onFetchError = func(topic string) {
+		m.KafkaFetchErrors.WithLabelValues(topic).Inc()
+	}
+	return onProcessed, onDLQ, onFetchError
 }
 
 // LagHook reports a sampled consumer lag.

@@ -27,7 +27,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config, features, labels  # noqa: E402
+from pitchlab_ml import config, features, labels
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
 log = logging.getLogger("fixture")

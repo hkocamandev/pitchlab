@@ -30,9 +30,10 @@ func exercise(m *Metrics) {
 	m.CacheHook()("analytics_read", "hit")
 	m.DBQueryDuration.WithLabelValues("GetAthleteSummary").Observe(0.004)
 
-	onProcessed, onDLQ := m.ConsumerHooks()
+	onProcessed, onDLQ, onFetchError := m.ConsumerHooks()
 	onProcessed("pitchlab.pitch.raw.v1", "ok", 1, 12*time.Millisecond)
 	onDLQ("pitchlab.pitch.raw.v1", "SCHEMA_VALIDATION")
+	onFetchError("pitchlab.pitch.raw.v1")
 	m.LagHook()("pitchlab.pitch.raw.v1", 2, 41)
 	m.ProducerHooks()("pitchlab.pitch.analyzed.v1")
 
@@ -154,6 +155,7 @@ func TestEveryDesignedMetricIsExported(t *testing.T) {
 		"kafka_consumer_lag",
 		"kafka_message_processing_duration_seconds",
 		"kafka_produce_errors_total",
+		"kafka_fetch_errors_total",
 		"kafka_dlq_messages_total",
 		"pitch_persist_duration_seconds",
 		"pitch_duplicates_skipped_total",

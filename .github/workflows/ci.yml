@@ -1,0 +1,151 @@
+# Continuous integration.
+#
+# Three jobs rather than one, because they fail for different reasons and
+# waiting for a Python install to find out that Go does not compile wastes the
+# feedback loop this exists to shorten.
+#
+# The integration and chaos suites are deliberately not here. They need a
+# broker, a database and a cache, and the chaos suite stops containers while
+# traffic is flowing -- minutes of wall clock and a stack that has to be
+# reassembled if a run is cancelled. They are run locally against a real stack
+# (`make test-integration`, `make test-chaos`), and a CI that pretended to run
+# them against a half-started service would be worse than one that says it
+# does not.
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          # Reported rather than rewritten: CI that formats code hides the
+          # diff from the person who wrote it.
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: test
+        # The race detector is not optional here. Most of what this codebase
+        # does is concurrent -- a hub, several consumers, a connection pool --
+        # and a data race that only appears under load is exactly what a test
+        # suite is supposed to catch before production does.
+        run: go test -race ./...
+
+      - name: generated types are current
+        # The dashboard's TypeScript is generated from the Go response structs.
+        # A field renamed without regenerating compiles cleanly on both sides
+        # and fails in a browser.
+        run: go run ./cmd/tsgen -check
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: install
+        run: npm ci
+
+      - name: typecheck
+        run: npx tsc -b
+
+      - name: test
+        run: npm run test
+
+      - name: build
+        run: npm run build
+
+      - name: audit
+        # Production dependencies only. A test runner's advisory does not ship
+        # to anyone, and failing the build on it trains people to pass --force.
+        run: npm audit --omit=dev --audit-level=high
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ml/requirements.txt
+          pip install pip-audit ruff
+
+      - name: lint
+        run: ruff check ml/
+
+      - name: test
+        # The contract tests are the ones that matter: the label mapping, the
+        # leakage whitelist and the transforms. They need no data beyond their
+        # own fixtures.
+        run: python -m pytest ml/tests -q
+
+      - name: pip-audit
+        run: pip-audit
+
+  images:
+    name: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the inference image
+        run: docker build -f ml/Dockerfile -t pitchlab-ml:ci .
+
+      - name: build the dashboard image
+        run: docker build -t pitchlab-web:ci ./web
+
+      - name: the containers do not run as root
+        run: |
+          for image in pitchlab-ml:ci pitchlab-web:ci; do
+            uid=$(docker run --rm --entrypoint id "$image" -u)
+            echo "$image runs as uid $uid"
+            if [ "$uid" = "0" ]; then
+              echo "$image runs as root"; exit 1
+            fi
+          done

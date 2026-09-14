@@ -1,0 +1,40 @@
+# Lint configuration.
+#
+# The default rule set is small; this project turns on the checks that catch
+# real mistakes in data code and leaves off the ones that would mean rewriting
+# working analysis for style.
+
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import ordering
+    "UP",   # outdated syntax
+    "B",    # likely bugs
+    "RUF",  # ruff's own checks
+]
+
+ignore = [
+    # Long lines in comments and docstrings. The prose in this repository
+    # explains why things are the way they are, and reflowing it to satisfy a
+    # column limit makes it harder to read, not easier.
+    "E501",
+    # Loop variable bound in a closure. Every occurrence here is a plotting
+    # or reporting loop where the closure runs immediately.
+    "B023",
+    # Ambiguous unicode in strings. The reports this code prints are in
+    # Turkish, and "i" without a dot is a letter, not a typo.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+# E402 stays enabled, rather than being ignored per file. The scripts insert
+# the repository root on sys.path before importing the package, so their
+# imports genuinely cannot come first -- and each one says so with an explicit
+# `# noqa: E402`. Ignoring the rule wholesale would make those annotations
+# dead, and would also stop the rule from catching an import that is late for
+# no reason.

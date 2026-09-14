@@ -139,7 +139,7 @@ services:
       context: ./web
     container_name: pitchlab-web
     ports:
-      - "${PITCHLAB_WEB_PORT:-5174}:80"
+      - "${PITCHLAB_WEB_PORT:-5174}:8080"
     profiles: ["web"]
 
   prometheus:

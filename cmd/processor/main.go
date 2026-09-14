@@ -155,8 +155,10 @@ func run() error {
 		WithCache(redis).
 		OnFinding(metrics.AnomalyHook())
 
-	onProcessed, onDLQ := metrics.ConsumerHooks()
-	consumerMetrics := pkafka.ConsumerMetrics{OnProcessed: onProcessed, OnDLQ: onDLQ}
+	onProcessed, onDLQ, onFetchError := metrics.ConsumerHooks()
+	consumerMetrics := pkafka.ConsumerMetrics{
+		OnProcessed: onProcessed, OnDLQ: onDLQ, OnFetchError: onFetchError,
+	}
 
 	// Lag is sampled from the broker rather than observed while consuming,
 	// because a reader in a consumer group cannot report its own lag.

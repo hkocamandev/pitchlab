@@ -22,8 +22,14 @@ from sklearn.metrics import roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import (  # noqa: E402
-    baseline, config, evaluate, features, labels, runvalue, split, train,
+from pitchlab_ml import (
+    baseline,
+    config,
+    evaluate,
+    features,
+    labels,
+    split,
+    train,
 )
 
 logging.basicConfig(

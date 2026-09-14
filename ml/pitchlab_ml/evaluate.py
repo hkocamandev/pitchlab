@@ -8,6 +8,7 @@ uncalibrated 40% is misinformation, not a prediction.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
@@ -93,7 +94,7 @@ def expected_calibration_error(
 
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     ece = 0.0
-    for lo, hi in zip(edges[:-1], edges[1:]):
+    for lo, hi in itertools.pairwise(edges):
         in_bin = (confidence > lo) & (confidence <= hi)
         if not in_bin.any():
             continue

@@ -17,13 +17,19 @@ COPY src ./src
 RUN npx tsc -b && npm run build
 
 # Serve stage.
-FROM nginx:1.27-alpine
+#
+# The unprivileged image, not the standard one. Stock nginx starts its master
+# process as root and drops privileges only for the workers; this variant runs
+# entirely as an unprivileged user and listens on 8080 because a non-root
+# process cannot bind a port below 1024. Nothing here needs root, and a
+# container that has it is a container that can be asked to use it.
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
-  CMD wget -q -O /dev/null http://localhost/ || exit 1
+  CMD wget -q -O /dev/null http://localhost:8080/ || exit 1

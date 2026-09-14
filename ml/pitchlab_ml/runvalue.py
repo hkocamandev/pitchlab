@@ -60,7 +60,7 @@ class RunValueTable:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict) -> "RunValueTable":
+    def from_dict(cls, payload: dict) -> RunValueTable:
         return cls(
             values=pd.DataFrame.from_dict(payload["values"], orient="index"),
             fallback=pd.Series(payload["fallback"]),
@@ -173,7 +173,7 @@ class ScoreScaler:
         return {"mu": float(self.mu), "sigma": float(self.sigma)}
 
     @classmethod
-    def from_dict(cls, payload: dict) -> "ScoreScaler":
+    def from_dict(cls, payload: dict) -> ScoreScaler:
         return cls(mu=float(payload["mu"]), sigma=float(payload["sigma"]))
 
 

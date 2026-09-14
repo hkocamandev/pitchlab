@@ -148,6 +148,31 @@ observability: ## Start Prometheus and Grafana
 	@echo "prometheus  http://localhost:$(PROMETHEUS_PORT)"
 	@echo "grafana     http://localhost:$(GRAFANA_PORT)  (five dashboards, no login)"
 
+.PHONY: test-chaos
+test-chaos: ## Break the system on purpose: stop dependencies under live traffic
+	@# Minutes, not seconds, and it stops real containers. Behind its own tag
+	@# so the unit suite stays fast and deterministic.
+	PITCHLAB_TEST_DATABASE_URL="$(DATABASE_URL)" \
+	PITCHLAB_TEST_KAFKA_BROKERS="$(KAFKA_BROKERS)" \
+	PITCHLAB_TEST_REDIS_URL="$(REDIS_URL)" \
+		go test -tags=chaos -count=1 -timeout=20m -v ./internal/chaos/
+
+.PHONY: loadtest
+loadtest: ## REST load test: make loadtest ATHLETE=<id> SESSION=<id>
+	go run ./cmd/loadtest --rest --athlete $(ATHLETE) --session $(SESSION) \
+		--duration 30s --concurrency 50
+
+.PHONY: loadtest-ws
+loadtest-ws: ## Open 500 concurrent WebSocket connections: make loadtest-ws SESSION=<id>
+	go run ./cmd/loadtest --ws --session $(SESSION) --connections 500 --duration 30s
+
+.PHONY: audit
+audit: ## Dependency and secret scans across all three stacks
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	cd web && npm audit --omit=dev --audit-level=high
+	$(VENV) -m pip_audit 2>/dev/null || .venv/bin/pip-audit
+	$(VENV) -m ruff check ml/ 2>/dev/null || .venv/bin/ruff check ml/
+
 .PHONY: check-dashboards
 check-dashboards: ## Verify every dashboard panel returns data from a live Prometheus
 	$(VENV) scripts/check-dashboards.py
@@ -207,6 +232,10 @@ tidy: ## Tidy go.mod
 
 # --- ml --------------------------------------------------------------------
 
+.PHONY: lint-py
+lint-py: ## Lint the Python code
+	.venv/bin/ruff check ml/
+
 .PHONY: ml-test
 ml-test: ## Run ML contract tests
 	cd ml && ../$(VENV) -m pytest
@@ -234,4 +263,4 @@ ml-load: ## Load pitches straight into PostgreSQL, bypassing the pipeline
 # --- combined --------------------------------------------------------------
 
 .PHONY: check
-check: vet test ml-test web-test ## Everything that must pass before a commit
+check: vet test ml-test web-test lint-py ## Everything that must pass before a commit

@@ -18,7 +18,7 @@ func (c *Cache) Generation(ctx context.Context, athleteID uuid.UUID) int64 {
 	}
 
 	var gen int64
-	c.call(ctx, "generation_read", func(ctx context.Context) error {
+	c.call(ctx, "generation_read", ResultHit, func(ctx context.Context) error {
 		var err error
 		gen, err = c.rdb.Get(ctx, generationKey(athleteID)).Int64()
 		return err
@@ -42,7 +42,7 @@ func (c *Cache) InvalidateAthlete(ctx context.Context, athleteID uuid.UUID) {
 		return
 	}
 	key := generationKey(athleteID)
-	c.call(ctx, "generation_bump", func(ctx context.Context) error {
+	c.call(ctx, "generation_bump", ResultOK, func(ctx context.Context) error {
 		pipe := c.rdb.Pipeline()
 		pipe.Incr(ctx, key)
 		pipe.Expire(ctx, key, GenerationTTL)
@@ -66,7 +66,7 @@ func (c *Cache) GetAnalytics(
 	}
 
 	var raw []byte
-	ok := c.call(ctx, "analytics_read", func(ctx context.Context) error {
+	ok := c.call(ctx, "analytics_read", ResultHit, func(ctx context.Context) error {
 		var err error
 		raw, err = c.rdb.Get(ctx,
 			analyticsKey(athleteID, generation, variant)).Bytes()
@@ -105,7 +105,7 @@ func (c *Cache) SetAnalytics(
 		return
 	}
 
-	c.call(ctx, "analytics_write", func(ctx context.Context) error {
+	c.call(ctx, "analytics_write", ResultOK, func(ctx context.Context) error {
 		return c.rdb.Set(ctx,
 			analyticsKey(athleteID, generation, variant), raw, SummaryTTL).Err()
 	})

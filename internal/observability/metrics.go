@@ -68,6 +68,7 @@ type Metrics struct {
 	KafkaLag           *prometheus.GaugeVec
 	KafkaProcessing    *prometheus.HistogramVec
 	KafkaProduceErrors *prometheus.CounterVec
+	KafkaFetchErrors   *prometheus.CounterVec
 	KafkaDLQ           *prometheus.CounterVec
 
 	// Pipeline.
@@ -169,6 +170,11 @@ func New() *Metrics {
 			Help: "Failed publishes.",
 		}, []string{"topic"}),
 
+		KafkaFetchErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kafka_fetch_errors_total",
+			Help: "Failed polls. The consumer retries rather than exiting.",
+		}, []string{"topic"}),
+
 		KafkaDLQ: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "kafka_dlq_messages_total",
 			Help: "Messages written to a dead-letter queue. Should stay at zero.",
@@ -212,7 +218,7 @@ func New() *Metrics {
 		m.WSMessagesSent, m.WSMessagesDrop, m.WSSlowConsumers,
 		m.CacheOperations, m.DBQueryDuration,
 		m.KafkaConsumed, m.KafkaLag, m.KafkaProcessing,
-		m.KafkaProduceErrors, m.KafkaDLQ,
+		m.KafkaProduceErrors, m.KafkaFetchErrors, m.KafkaDLQ,
 		m.PitchPersistDuration, m.PitchDuplicates,
 		m.PredictionsGenerated, m.AnomaliesDetected,
 		m.MLDuration, m.MLErrors,
