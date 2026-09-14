@@ -35,6 +35,12 @@ type FeatureInput struct {
 	PfxXDiffVsFB      *float64
 	PfxZDiffVsFB      *float64
 	ReleaseDistFromFB *float64
+
+	// PitchNumber is the pitch's index within the plate appearance, and
+	// DaysSincePrevGame the pitcher's rest. Both are situation, not shape, so
+	// they belong with the context features and never reach the stuff model.
+	PitchNumber   int
+	DaysSincePrev *float64
 }
 
 // BuildFeatures assembles the map sent to the inference service.
@@ -118,6 +124,8 @@ func BuildFeatures(in FeatureInput, variant mlclient.Variant) map[string]any {
 	if c.BatScore != nil && c.FldScore != nil {
 		f["score_diff"] = *c.BatScore - *c.FldScore
 	}
+	f["pitch_number"] = in.PitchNumber
+	putFloat(f, "pitcher_days_since_prev_game", in.DaysSincePrev)
 
 	// Location.
 	putFloat(f, "plate_x_bat", m.PlateXBat)
@@ -130,13 +138,6 @@ func BuildFeatures(in FeatureInput, variant mlclient.Variant) map[string]any {
 	}
 
 	return f
-}
-
-// pitchNumberFeature is supplied separately because it comes from the pitch's
-// sequence rather than its measurement.
-func addSequenceFeatures(f map[string]any, pitchNumber int, daysSincePrev *float64) {
-	f["pitch_number"] = pitchNumber
-	putFloat(f, "pitcher_days_since_prev_game", daysSincePrev)
 }
 
 func putFloat(f map[string]any, key string, v *float64) {

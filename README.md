@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-design%20complete%20%C2%B7%20phase%201-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-phases%200%E2%80%936%20complete-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -435,6 +435,38 @@ The leakage defense on the Go side is the shape of a struct: `FeatureInput` has 
 
 ---
 
+## The replay simulator
+
+Real tracking hardware is not available outside a stadium, so the simulator stands in for it — and the value is in *how faithfully* it stands in.
+
+**It publishes to Kafka and nothing else.** The binary does not import the database, the cache, or the inference client, and a test enforces that by inspecting the dependency graph (`go list -deps`). This is not tidiness. If the simulator wrote to PostgreSQL directly, the Kafka → processor → inference → storage backbone would never execute during a demo, and normalization and idempotency would exist in two copies that inevitably drift.
+
+**It emits raw readings.** Handedness mirroring, circular spin encoding, and zone normalization are domain rules that belong in the processor, where they are pinned to the training code by the golden fixture. A camera does not know which hand threw the pitch.
+
+**It cannot emit an outcome.** The event has nowhere to put exit velocity or run value, because the device that produces it could not measure them. Imitating the device faithfully is what turns the leakage defense from a matter of remembering into a structural property: a field that cannot be transmitted cannot accidentally reach a feature vector.
+
+### Synthetic time
+
+Statcast records a calendar date, not a clock, so a replayed pitch has no timestamp to reuse — the simulator synthesizes one from game state, which is what actually governs pace: 19s with the bases empty, 23s with a runner on (the 2023 pitch timer plus the pitcher's routine), +2s at two strikes, +25s for a new batter, +150s for a change of sides, and −2s…+4s of jitter so the stream reads like a game rather than a metronome.
+
+The clock is seeded, and the seed is mixed with the session key rather than used globally — so adding or removing an outing does not shift the timestamps of the others. The same tape and seed replay identically, which is what makes a demo rehearsable and a timing test able to assert anything at all.
+
+`occurred_at` (synthetic, in 2025) and `produced_at` (now) stay separate fields, so nothing downstream mistakes a replayed pitch for something that just happened.
+
+### The bug this phase found
+
+The first end-to-end run produced 344 predictions from the outcome model and **zero** from the stuff model. The processor was attaching `pitch_number` to every variant, but the stuff variant is trained on pitch shape alone — sequence and rest are *situation*, not shape. The inference service rejected all 344 calls with `unknown feature(s) for variant stuff: pitch_number`.
+
+That is exactly what the feature-contract check exists for. Without it the field would have been silently ignored and a `stuff_score` produced from an input the model never saw in training, with nothing failing anywhere.
+
+### Measured end to end
+
+3 outings, 344 pitches, requested 800×: **19.6 seconds wall clock, 612× effective**, 344 pitches and 344 measurements persisted, 688 predictions across both variants, 344/344 at `prediction_status='OK'`, zero processor warnings.
+
+(The effective-speed figure was initially reported as 109,152×. The span was being taken as overall min-to-max across outings from *different calendar dates*, so it counted the days between games. It is now summed per outing.)
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out to the browser console.
@@ -494,8 +526,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 3 | Go backend · REST | ✅ Complete |
 | 4 | ML inference service | ✅ Complete |
 | 5 | Kafka event architecture | ✅ Complete |
-| 6 | Replay simulator | 🔨 In progress |
-| 7 | WebSocket | |
+| 6 | Replay simulator | ✅ Complete |
+| 7 | WebSocket | 🔨 In progress |
 | 8 | Redis | |
 | 9 | React dashboard | |
 | 10 | Observability | |
@@ -551,14 +583,23 @@ make kafka-topics  # 3 work topics + 2 DLQs, explicit partitions and retention
 make migrate-up    # 8 tables, 12 indexes, 38 CHECK constraints
 make seed          # register the replay device and the trained models
 
-# Load real pitches so the API has something to serve. This is a temporary
-# bridge; the replay simulator replaces it in phase 6.
-.venv/bin/python ml/scripts/load_to_postgres.py --sessions 20
-
 go run ./cmd/api   # http://localhost:8081
 make ml-serve      # http://localhost:8000
 make processor     # the stream processor
 make test-integration
+```
+
+Feed the pipeline by replaying real outings as a live device feed:
+
+```bash
+# Build a device-shaped tape from historical pitches (no derived or
+# post-contact fields — the camera could not have measured them)
+.venv/bin/python ml/scripts/export_replay_tape.py --season 2025 --sessions 8
+
+# Replay it into Kafka. 30x is a readable demo pace; 0 means no waiting at all.
+go run ./cmd/replay --tape data/processed/replay_tape_2025_8.ndjson --speed 30 --sessions 3
+
+# --dry-run builds and paces the events without publishing
 ```
 
 ```bash

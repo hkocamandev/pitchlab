@@ -372,6 +372,9 @@ func TestStuffVariantSeesNeitherLocationNorSituation(t *testing.T) {
 	for _, forbidden := range []string{
 		"plate_x_bat", "zone_height_norm", "in_zone", "dist_from_zone_center",
 		"balls", "strikes", "count_state", "inning", "runners_state",
+		// Sequence and rest are situation, not shape. Sending them cost 228
+		// rejected predictions before the contract check caught it.
+		"pitch_number", "pitcher_days_since_prev_game",
 	} {
 		if _, present := stuff[forbidden]; present {
 			t.Errorf("the stuff variant must not see %s", forbidden)
