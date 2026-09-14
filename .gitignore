@@ -18,6 +18,14 @@ models/
 # --- Go ---
 /bin/
 /dist/
+# Binaries left by `go build ./cmd/...` in the repository root.
+/tsgen
+/api
+/processor
+/replay
+/seed
+/wsclient
+/dlq-replay
 *.exe
 *.test
 *.out

@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-phases%200%E2%80%938%20complete-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-phases%200%E2%80%939%20complete-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -588,6 +588,53 @@ Redis runs with persistence off and `allkeys-lru` eviction. Nothing here is a re
 
 ---
 
+## The dashboard
+
+Three pages: an athlete overview, an outing timeline, and a live view. React 18, TypeScript, Vite, TanStack Query for server state and a reducer for the stream. No state library beyond that, no design system — the brief is that the dashboard should be functional and readable, not showy.
+
+### Its types are generated from the Go structs
+
+Not hand-written, and not from an OpenAPI document. `cmd/tsgen` reflects over the response structs and emits `web/src/api/types.gen.ts`, and a Go test fails the build when the checked-in file no longer matches.
+
+Hand-written types drift: a field renamed on the server compiles cleanly on both sides and fails in a browser. An OpenAPI document is the same problem one level removed — a second hand-maintained artifact that can disagree with the code it claims to describe. Generating from the structs makes drift impossible, because there is only one source.
+
+The generator maps what the encoder actually produces rather than what the Go type is named: `uuid.UUID` and `time.Time` are strings, `json.RawMessage` is raw JSON and not a base64 `[]byte`, a pointer is `T | null` because the dashboard must draw "no reading" differently from zero, and embedded structs are flattened because `encoding/json` inlines them. Two Go types that share a base name while describing different shapes — the REST pitch context and the event pitch context — are named by the registry, so they cannot silently merge into one declaration.
+
+### The sequence number earns its keep here
+
+Phase 7 assigns a message's sequence number when it is queued, so a message dropped for a slow client leaves a visible gap. This is the half that uses it: the hook notices the jump, reports how many messages were missed, and the page refetches over REST. The viewer is told, too — a timeline with silent holes in it would be worse than one that says it had holes.
+
+Reconnection is the client's responsibility: exponential backoff with jitter, capped at thirty seconds, and **no** retry after close code 1000, because that code means the outing is over and retrying would reconnect forever to a session that will never produce another pitch. Sequence numbers are per connection, so the baseline resets on reconnect — not resetting would read a fresh connection's first message as a gap of however far the old one had counted.
+
+### Three bugs worth keeping
+
+**The hook reconnected on every render.** The first page-level test exhausted V8's heap. The effect listed its option callbacks as dependencies, and a caller passing an inline lambda — the natural way to write one — hands it a new function identity each render. A page that re-renders per pitch would have reconnected per pitch. Every option now lives in a ref and the effect depends only on the session id. No unit test could have caught it; the hook tests passed stable function identities.
+
+**The dashboard container would not start without the API.** nginx resolves a literal upstream host once, at configuration load, and exits if it cannot: `host not found in upstream "api"`. The dashboard could not start because the service it displays was starting — a dependency in the wrong direction, and the same mistake as refusing to boot over a cache. It now resolves per request through a variable upstream, so with the API unreachable the container serves the app and the proxy returns 502.
+
+**Explanations timed out.** The endpoint returned 503 while the inference service answered successfully in 5.4 seconds — the first SHAP request also builds the explainer. The client's two-second deadline is right for scoring, where a hung service would hold a Kafka partition hostage, and wrong for attribution, where the only thing waiting is one person who asked about one pitch. Two callers, two deadlines.
+
+### The endpoint the design specified and nobody had built
+
+`GET /api/v1/pitches/{id}/explanation` was in the API design and had never been implemented, so the SHAP panel would have been dead UI. It is implemented now, and the feature vector is rebuilt with the stream processor's own code rather than a copy — two implementations of the same feature construction would drift, and the failure would be silent: an explanation of a slightly different pitch than the one that was scored.
+
+Contributions are reported in the model's margin space and labelled as such, with the leftover mass shown as `other_contribution` so the parts add up:
+
+```
+dist_from_zone_center = 1.92   →  +2.596   (toward BALL)
+base -2.6989 + contributions 3.8265 = 1.1276 = predicted_value
+```
+
+Presenting those as percentage points of probability would be arithmetic that does not hold — and exactly the kind of plausible wrong number a dashboard makes convincing.
+
+### Domain decisions that show up in the pixels
+
+The movement profile plots **arm-side** break, not raw `pfx_x`. Raw horizontal break has the opposite sign for a left-hander, so two pitchers with identical arsenals would appear in mirrored quadrants. The strike-zone plot does the opposite: it uses **raw** `plate_x`, because a location plot has to show where the pitch physically crossed the plate, and mirroring it for left-handed batters would move pitches that never moved. The measurement table shows both the raw and the arm-frame value, because showing only one would hide the normalization.
+
+The prediction is shown next to what actually happened, including on the pitches the model got wrong.
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out over the WebSocket to the client. The last hop is now verified: an id taken from a message the client received appears in the inference service's log for the same pitch.
@@ -650,8 +697,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 6 | Replay simulator | ✅ Complete |
 | 7 | WebSocket | ✅ Complete |
 | 8 | Redis | ✅ Complete |
-| 9 | React dashboard | 🔨 In progress |
-| 10 | Observability | |
+| 9 | React dashboard | ✅ Complete |
+| 10 | Observability | 🔨 In progress |
 | 11 | Hardening · chaos, load, security | |
 | 12 | Demo & documentation | |
 
@@ -739,6 +786,23 @@ go run ./cmd/wsclient --session <session-id>
 It reconnects with exponential backoff and reports sequence gaps rather than
 assuming every message arrived.
 
+Run the dashboard:
+
+```bash
+make web-install   # once
+make web           # http://localhost:5173, proxies the API and the live channel
+```
+
+The dev server proxies `/api` and `/ws` so the browser sees a single origin —
+the same shape nginx serves in the container, so a page that works in
+development works in a deployment.
+
+```bash
+make ts-types      # regenerate the dashboard's types from the Go structs
+make web-test      # 35 component, hook and page tests
+make web-build     # type-check and build the bundle
+```
+
 Prove the cache is not load-bearing:
 
 ```bash
@@ -772,14 +836,14 @@ make demo          # compose up → migrate → seed → replay   (target: phase
 The project is finished when all of the following are true:
 
 - [ ] `docker compose up` brings the whole stack online in one command
-- [ ] Running the replay simulator makes pitches stream **live** into the dashboard over WebSocket
-- [ ] Every pitch shows a model prediction and a derived score, with the derivation documented
+- [x] Running the replay simulator makes pitches stream **live** into the dashboard over WebSocket
+- [x] Every pitch shows a model prediction and a derived score, with the derivation documented
 - [x] The model is trained on leakage-free features and beats a baseline on a **temporal** test set
 - [x] Publishing the same event twice does not create a second database row
 - [x] A poison message lands in the DLQ without stalling the consumer
 - [x] Stopping Redis degrades performance without failing a single request
 - [ ] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
-- [ ] One `correlation_id` traces a single pitch end-to-end across every service log
+- [x] One `correlation_id` traces a single pitch end-to-end across every service log
 
 ---
 
