@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/db/dbgen"
 	"github.com/hkocamandev/pitchlab/internal/events"
@@ -47,6 +48,11 @@ type Pipeline struct {
 	log      *slog.Logger
 	version  string
 
+	// cache is optional and may be nil. Every method on it tolerates that, so
+	// there is no branch here and no way for a Redis outage to reach this
+	// code path as an error.
+	cache *cache.Cache
+
 	metrics PipelineMetrics
 }
 
@@ -63,6 +69,12 @@ func NewPipeline(
 	log *slog.Logger, version string,
 ) *Pipeline {
 	return &Pipeline{store: store, ml: ml, producer: producer, log: log, version: version}
+}
+
+// WithCache attaches the Redis layer.
+func (p *Pipeline) WithCache(c *cache.Cache) *Pipeline {
+	p.cache = c
+	return p
 }
 
 // WithMetrics attaches metric callbacks.
@@ -152,6 +164,11 @@ func (p *Pipeline) HandlePitchRaw(ctx context.Context, env *events.Envelope) err
 		return pkafka.ErrDuplicate
 	}
 
+	// Cache updates come after the durable write and before the notification,
+	// so a dashboard reacting to the broadcast finds live counters that
+	// already include this pitch. Both calls are best-effort by construction.
+	p.updateCache(ctx, analyzed, raw, pitcherID, sessionID, batterID)
+
 	out, err := env.Derive(events.TypePitchAnalyzed, p.producerName(),
 		env.IdempotencyKey, raw.Session.SessionUID, analyzed)
 	if err != nil {
@@ -169,6 +186,51 @@ func (p *Pipeline) HandlePitchRaw(ctx context.Context, env *events.Envelope) err
 		"pitch_id", pitchID, "index", analyzed.Sequence.SessionPitchIndex,
 		"status", status, "predictions", len(predictions))
 	return nil
+}
+
+// updateCache folds a pitch into the live counters and invalidates the
+// pitcher's cached rollups.
+//
+// Deliberately after the duplicate check: a redelivered pitch returns earlier,
+// so counters are incremented exactly once per pitch even though delivery is
+// at-least-once. Counting on every delivery would make the live view drift
+// upward from the truth in the database, and the drift would be invisible
+// until someone compared the two.
+func (p *Pipeline) updateCache(
+	ctx context.Context,
+	analyzed *events.PitchAnalyzed,
+	raw events.PitchRaw,
+	pitcherID, sessionID uuid.UUID,
+	batterID *uuid.UUID,
+) {
+	if p.cache == nil {
+		return
+	}
+
+	obs := cache.PitchObservation{
+		ReleaseSpeed: analyzed.Measurement.ReleaseSpeed,
+		ReleaseSpin:  analyzed.Measurement.ReleaseSpinRate,
+		IsWhiff:      analyzed.ActualOutcome == "SWINGING_STRIKE",
+		ThrownAt:     analyzed.ThrownAt,
+		Balls:        raw.Context.Balls,
+		Strikes:      raw.Context.Strikes,
+		Outs:         raw.Context.OutsWhenUp,
+		BatterID:     batterID,
+	}
+	for _, pred := range analyzed.Predictions {
+		if pred.Variant == "pitching" {
+			score := pred.Score
+			obs.Score = &score
+			break
+		}
+	}
+
+	p.cache.RecordPitch(ctx, sessionID, obs)
+
+	// Invalidate rather than update. Updating would require this service to
+	// know how the API computes its rollups -- the same logic in two places,
+	// wrong the first time either changes.
+	p.cache.InvalidateAthlete(ctx, pitcherID)
 }
 
 func validateRaw(raw events.PitchRaw) error {

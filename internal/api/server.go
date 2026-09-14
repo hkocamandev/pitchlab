@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/httpx"
@@ -22,6 +23,10 @@ type Server struct {
 	// wsHandler is optional too: with no hub attached the REST surface still
 	// serves, and the route simply does not exist.
 	wsHandler http.Handler
+	// cache is optional and may be nil. Every method on it tolerates that, so
+	// there is no "is the cache configured" branch in any handler, and no path
+	// by which a Redis problem becomes a failed request.
+	cache *cache.Cache
 }
 
 // RedisChecker is the slice of Redis the API needs for readiness. Keeping it
@@ -39,6 +44,18 @@ func New(cfg config.API, store *db.Store, log *slog.Logger) *Server {
 // WithRedis attaches a cache for readiness reporting.
 func (s *Server) WithRedis(r RedisChecker) *Server {
 	s.redis = r
+	return s
+}
+
+// WithCache attaches the Redis layer and reports it in readiness.
+//
+// Readiness reports it as degraded, never as unready: taking the whole API out
+// of rotation over a cache outage is the failure this design exists to avoid.
+func (s *Server) WithCache(c *cache.Cache) *Server {
+	s.cache = c
+	if c != nil {
+		s.redis = c
+	}
 	return s
 }
 

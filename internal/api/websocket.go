@@ -43,6 +43,12 @@ func (s *Server) SessionSnapshot(
 		}
 	}
 
+	// The denormalized counters on the session row are only recomputed when an
+	// outing ends, so during live play they read zero. The live counters are
+	// what the dashboard actually needs, and they come from the cache when it
+	// has them and from the rows themselves when it does not.
+	detail.Metrics = s.liveSessionMetrics(ctx, sessionID, detail.Metrics)
+
 	rows, err := s.store.ListPitchesBySessionDesc(ctx,
 		dbgen.ListPitchesBySessionDescParams{
 			SessionID: sessionID, Limit: SnapshotPitchCount,
@@ -82,6 +88,60 @@ func (s *Server) SessionSnapshot(
 		Closed: session.Status != string(domain.SessionActive),
 		Reason: session.Status,
 	}, nil
+}
+
+// liveSessionMetrics reports an outing's running numbers.
+//
+// Cache first, PostgreSQL second, and the session row's stored aggregates last.
+// The fallback is not a degraded mode that needs explaining to a user: it
+// produces the same numbers, just by scanning rows instead of reading eight
+// integers, which is exactly the trade the cache exists to make.
+func (s *Server) liveSessionMetrics(
+	ctx context.Context, sessionID uuid.UUID, stored SessionMetricsDTO,
+) SessionMetricsDTO {
+	if live, ok := s.cache.LiveSession(ctx, sessionID); ok {
+		return SessionMetricsDTO{
+			PitchCount:         int32(live.PitchCount),
+			AvgReleaseSpeed:    float32Ptr(live.AvgReleaseSpeed),
+			AvgReleaseSpinRate: float32Ptr(live.AvgReleaseSpin),
+			AvgPitchScore:      float32Ptr(live.AvgPitchScore),
+		}
+	}
+
+	row, err := s.store.GetSessionLiveMetrics(ctx, sessionID)
+	if err != nil {
+		s.log.Warn("could not rebuild live session metrics",
+			"session_id", sessionID, "error", err)
+		return stored
+	}
+	if row.PitchCount == 0 {
+		return stored
+	}
+
+	return SessionMetricsDTO{
+		PitchCount: int32(row.PitchCount),
+		// Paired with their own counts, so a field that was null on every
+		// pitch is reported as absent rather than as zero.
+		AvgReleaseSpeed:    float32IfCounted(row.AvgReleaseSpeed, row.SpeedCount),
+		AvgReleaseSpinRate: float32IfCounted(row.AvgReleaseSpinRate, row.SpinCount),
+		AvgPitchScore:      float32IfCounted(row.AvgPitchScore, row.ScoreCount),
+	}
+}
+
+func float32Ptr(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	f := float32(*v)
+	return &f
+}
+
+func float32IfCounted(v float64, n int64) *float32 {
+	if n <= 0 {
+		return nil
+	}
+	f := float32(v)
+	return &f
 }
 
 // WithWebSocket attaches the real-time channel.

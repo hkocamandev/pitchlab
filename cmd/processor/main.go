@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/events"
 	pkafka "github.com/hkocamandev/pitchlab/internal/kafka"
@@ -101,7 +102,23 @@ func run() error {
 	}
 	cancelReady()
 
-	pipeline := processor.NewPipeline(store, ml, producer, log, version)
+	// Optional by design: with Redis down the processor stores everything it
+	// stores now, and the dashboard simply recomputes its live numbers from
+	// the rows.
+	redis, err := cache.New(cache.DefaultConfig(
+		env("REDIS_URL", "redis://localhost:6379/0")), log)
+	if err != nil {
+		log.Warn("cache disabled; continuing without it", "error", err)
+		redis = nil
+	}
+	defer func() {
+		if err := redis.Close(); err != nil {
+			log.Warn("close cache", "error", err)
+		}
+	}()
+
+	pipeline := processor.NewPipeline(store, ml, producer, log, version).
+		WithCache(redis)
 
 	anomalyCfg := processor.DefaultAnomalyConfig()
 	if v := os.Getenv("PITCHLAB_ANOMALY_IDLE_TIMEOUT"); v != "" {
@@ -109,7 +126,8 @@ func run() error {
 			anomalyCfg.IdleTimeout = d
 		}
 	}
-	evaluator := processor.NewAnomalyEvaluator(store, producer, anomalyCfg, log, version)
+	evaluator := processor.NewAnomalyEvaluator(store, producer, anomalyCfg, log, version).
+		WithCache(redis)
 
 	rawConsumer := pkafka.NewConsumer(withConcurrency(
 		pkafka.DefaultConsumerConfig(brokers, events.TopicPitchRaw, "pitch-processor"),

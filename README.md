@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-phases%200%E2%80%937%20complete-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-phases%200%E2%80%938%20complete-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -532,6 +532,62 @@ The consumer starts at the latest offset, has no dead-letter queue, and never re
 
 ---
 
+## The cache, and the proof it is not load-bearing
+
+Redis earns its place in exactly two ways here, and a third use the design had accepted was rejected once phase 7 made it redundant.
+
+### It is optional in the type system
+
+A `nil` cache is a valid cache that always misses, and every method tolerates being called on one. No handler has an "if the cache is configured" branch. No method returns an error for a Redis failure: a read that fails is a miss, a write that fails is logged and forgotten, and the caller carries on against PostgreSQL. **There is no code path by which a Redis problem becomes a failed request** — not by convention, but because there is nowhere to put one.
+
+Both processes also start with Redis down. Refusing to boot over a cache is how a cache becomes critical.
+
+### Live session counters
+
+`sessions.pitch_count` and its averages are only recomputed when an outing *ends*. During live play the row reads zero — which is the gap these counters fill.
+
+They change once per pitch, and in burst replay that is hundreds of writes a second to one logical row. In PostgreSQL that means hundreds of `UPDATE`s against a single row: lock contention, a new row version each time, and a table that needs vacuuming to stay usable. `HINCRBY` is atomic, lock-free and O(1).
+
+Losing them costs nothing, and that is the other half of the argument: a single query rebuilds every value from the rows themselves. When an outing ends, the authoritative aggregates are written to PostgreSQL and *then* the key is dropped — in that order, so a failed recompute cannot leave both copies gone.
+
+**The hazard worth naming:** these counters are incremented, not recomputed, so at-least-once delivery is a real risk for them in a way it is not for the database. The natural key absorbs a duplicate row; nothing absorbs a duplicate `HINCRBY`. The protection is ordering — the duplicate check returns *before* the cache is touched. A test publishes the same pitch three times and asserts one row **and** a live count of one.
+
+### Cached analytics, and why the design's invalidation was wrong
+
+The athlete rollup runs up to four aggregates over every pitch a pitcher has thrown. The design said to cache it under one key per athlete and delete that key when a new pitch arrives.
+
+That is correct only while the endpoint has one shape. It has several: `from`, `to` and `include` all change the payload, so one athlete has **several valid entries at once**. Deleting one key would invalidate one and leave the rest stale — while looking exactly like invalidation had worked.
+
+The fix is a generation counter. The processor does one `INCR`; the key embeds the generation, so every variant becomes unaddressable at once, with no keyspace scan for keys to delete. Old entries are not removed — they become unreachable and expire.
+
+The key also carries a schema version, so a deploy that changes the cached shape misses every pre-deploy entry instead of decoding it. No cache flush, and no ordering requirement between the deploy and the cache.
+
+Invalidating rather than updating is deliberate too: updating in place would require the stream processor to know how the API computes its rollups — the same logic in two services, wrong the first time either one changes.
+
+### What was rejected
+
+Redis Pub/Sub for WebSocket fan-out was in the design and is **not implemented**. Phase 7 solved the same problem by giving each replica its own Kafka consumer group, so every replica already receives every message; Pub/Sub would be a second mechanism for a guarantee that already holds. The trade-off is stated rather than hidden: each replica reads the whole topic, which costs bandwidth. At this scale that is cheaper than another component in the broadcast path.
+
+Adding it anyway would be precisely the mistake the design warns about — using Redis because it is in the stack. Applied honestly, the criterion says no.
+
+Also rejected: caching individual pitches (a primary-key lookup PostgreSQL answers in under a millisecond from its own buffer cache), caching predictions (immutable and already stored — a second copy buys nothing and risks disagreement), and caching session lists (an index already covers it; measure first).
+
+### Measured
+
+| | Latency | `X-Cache` |
+|---|---|---|
+| Cold — computed | 4.9 ms | `MISS` |
+| Warm — cached | ~1.05 ms | `HIT` |
+| **Redis stopped** | 2.0–9.9 ms | `MISS`, every response **200** |
+
+With `docker compose stop redis`, all thirteen REST endpoints answer `200`, `/readyz` returns `200` with `degraded: ["redis"]` rather than taking the instance out of rotation, and the WebSocket snapshot rebuilds its metrics from the rows — matching the PostgreSQL values exactly (`121 | 86.529755 | 2375.4712 | 99.141304`).
+
+Calls are bounded at 50 ms with retries disabled. The library's default of three attempts with backoff would stack three dial timeouts inside one request against an unreachable Redis. The dangerous failure is not a refused connection — that returns immediately — but a server that accepts and never answers; a test stands one up and asserts the call gives up.
+
+Redis runs with persistence off and `allkeys-lru` eviction. Nothing here is a record, so durability buys nothing and an eviction is indistinguishable from a cold cache. A Redis that cannot survive a restart cannot quietly become the system of record.
+
+---
+
 ## Observability
 
 Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out over the WebSocket to the client. The last hop is now verified: an id taken from a message the client received appears in the inference service's log for the same pitch.
@@ -593,8 +649,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 5 | Kafka event architecture | ✅ Complete |
 | 6 | Replay simulator | ✅ Complete |
 | 7 | WebSocket | ✅ Complete |
-| 8 | Redis | 🔨 In progress |
-| 9 | React dashboard | |
+| 8 | Redis | ✅ Complete |
+| 9 | React dashboard | 🔨 In progress |
 | 10 | Observability | |
 | 11 | Hardening · chaos, load, security | |
 | 12 | Demo & documentation | |
@@ -683,6 +739,16 @@ go run ./cmd/wsclient --session <session-id>
 It reconnects with exponential backoff and reports sequence gaps rather than
 assuming every message arrived.
 
+Prove the cache is not load-bearing:
+
+```bash
+make redis-keys    # what the project has written: pl:session:*:live, pl:athlete:*:gen
+make redis-down    # stop Redis
+curl -i "localhost:8081/api/v1/athletes/$ID/analytics"   # 200, X-Cache: MISS
+curl localhost:8081/readyz                               # 200, degraded: ["redis"]
+make redis-up
+```
+
 ```bash
 curl localhost:8081/readyz
 curl 'localhost:8081/api/v1/athletes?limit=5'
@@ -711,7 +777,7 @@ The project is finished when all of the following are true:
 - [x] The model is trained on leakage-free features and beats a baseline on a **temporal** test set
 - [x] Publishing the same event twice does not create a second database row
 - [x] A poison message lands in the DLQ without stalling the consumer
-- [ ] Stopping Redis degrades performance without failing a single request
+- [x] Stopping Redis degrades performance without failing a single request
 - [ ] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
 - [ ] One `correlation_id` traces a single pitch end-to-end across every service log
 
