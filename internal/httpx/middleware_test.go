@@ -2,6 +2,8 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -220,3 +222,56 @@ func TestWriteProblemPreservesClientErrorDetail(t *testing.T) {
 type errPlain string
 
 func (e errPlain) Error() string { return string(e) }
+
+func TestMiddlewareChainAllowsConnectionHijack(t *testing.T) {
+	// A WebSocket upgrade works by hijacking the connection, and every
+	// upgrade in this service passes through the access log first. The
+	// recorder that wraps the response has to forward Hijack, or the upgrade
+	// library -- which type-asserts http.Hijacker rather than going through
+	// http.ResponseController -- sees a writer that cannot be hijacked and
+	// answers every handshake with a 500.
+	var (
+		hijacked  bool
+		hijackErr error
+	)
+
+	var handler http.Handler = http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				hijackErr = errNotHijackable
+				return
+			}
+			conn, buf, err := hj.Hijack()
+			if err != nil {
+				hijackErr = err
+				return
+			}
+			hijacked = true
+			_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\n\r\n")
+			_ = buf.Flush()
+			_ = conn.Close()
+		})
+
+	handler = Recovery(handler)
+	handler = CORS(func(string) bool { return true })(handler)
+	handler = Logging(slog.New(slog.NewTextHandler(io.Discard, nil)))(handler)
+	handler = RequestID(handler)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/ws/sessions/x")
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+
+	if hijackErr != nil {
+		t.Fatalf("hijack through the middleware chain failed: %v", hijackErr)
+	}
+	if !hijacked {
+		t.Fatal("the handler could not hijack the connection")
+	}
+}
+
+var errNotHijackable = errors.New("response writer does not implement http.Hijacker")

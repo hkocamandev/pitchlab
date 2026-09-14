@@ -1,8 +1,11 @@
 package httpx
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -115,9 +118,28 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer, which the
-// WebSocket upgrade needs in order to hijack the connection.
+// Unwrap lets http.ResponseController reach the underlying writer.
 func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Hijack takes the connection over, which is how a WebSocket upgrade works.
+//
+// Implementing this explicitly is not optional. Unwrap alone only helps
+// callers that go through http.ResponseController; a library that type-asserts
+// http.Hijacker directly -- which the WebSocket upgrader does -- sees a
+// wrapper that does not implement it and fails the handshake with a 500. That
+// is exactly how this was found: every upgrade behind the access log returned
+// "Internal Server Error" while the same handler worked without it.
+func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("httpx: %T does not support hijacking",
+			w.ResponseWriter)
+	}
+	// Nothing further will be written through this recorder, so the status is
+	// recorded here or the access log reports a 200 for every upgrade.
+	w.status = http.StatusSwitchingProtocols
+	return hijacker.Hijack()
+}
 
 // Logging attaches a request-scoped logger and writes one access log line per
 // request.

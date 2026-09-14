@@ -19,6 +19,13 @@ MIGRATE := docker run --rm --network host \
 
 VENV := .venv/bin/python
 
+# Replay defaults. Override on the command line:
+#   make replay SPEED=5 TAPE=data/processed/replay_tape_2025_3.ndjson
+SEASON   ?= 2025
+SESSIONS ?= 8
+SPEED    ?= 30
+TAPE     ?= data/processed/replay_tape_$(SEASON)_$(SESSIONS).ndjson
+
 .PHONY: help
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -99,6 +106,18 @@ processor: ## Run the stream processor
 dlq: ## Show what is sitting in the raw-pitch dead-letter queue
 	go run ./cmd/dlq-replay --dlq pitchlab.pitch.raw.v1.dlq --dry-run --timeout 5s
 
+.PHONY: tape
+tape: ## Export a device-shaped replay tape from historical pitches
+	$(VENV) ml/scripts/export_replay_tape.py --season $(SEASON) --sessions $(SESSIONS)
+
+.PHONY: replay
+replay: ## Replay a tape into Kafka as a live device feed
+	go run ./cmd/replay --tape $(TAPE) --speed $(SPEED)
+
+.PHONY: watch
+watch: ## Follow one session's live channel from the terminal
+	go run ./cmd/wsclient --session $(SESSION)
+
 .PHONY: seed
 seed: ## Register the replay device and the trained model versions
 	go run ./cmd/seed
@@ -154,7 +173,7 @@ ml-serve: ## Run the inference service locally
 	$(VENV) -m uvicorn ml.service.app:app --port 8000 --reload
 
 .PHONY: ml-load
-ml-load: ## Load real pitches into PostgreSQL (temporary, until phase 6)
+ml-load: ## Load pitches straight into PostgreSQL, bypassing the pipeline
 	$(VENV) ml/scripts/load_to_postgres.py --sessions 20
 
 # --- combined --------------------------------------------------------------

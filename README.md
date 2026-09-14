@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-phases%200%E2%80%936%20complete-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-phases%200%E2%80%937%20complete-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -467,9 +467,74 @@ That is exactly what the feature-contract check exists for. Without it the field
 
 ---
 
+## The real-time channel
+
+`GET /ws/sessions/{sessionId}` — one channel per outing, read-only, and lock-free.
+
+### The registry is owned by one goroutine
+
+No mutex, anywhere. A single goroutine owns `map[sessionID]map[*Client]struct{}` and nothing else ever touches it, so there is no lock to forget and no lock ordering to get wrong. The alternative — an `RWMutex` — works, but the read lock is held for the length of a broadcast, so registering a client waits behind the slowest send in the loop.
+
+Each connection gets exactly one reader and one writer goroutine. That is not a style preference: a WebSocket supports neither concurrent reads nor concurrent writes, and the penalty for getting it wrong is a panic inside the library.
+
+### Sequence numbers are assigned on enqueue, not on write
+
+This is the part worth defending. A message dropped because the client is too slow has **already consumed its sequence number**, so the client sees a gap and knows to reconcile over REST. It is the WebSocket equivalent of a Kafka offset: not a guarantee of delivery, but a guarantee that non-delivery is *detectable*.
+
+Each client's queue is bounded at 256, with a policy per message type:
+
+| Type | Policy | Why |
+|---|---|---|
+| `pitch.analyzed` | drop, count it | Independent events; order matters and the gap must be visible |
+| `session.metrics` | drop | Cumulative; a fresher one arrives within a second |
+| `anomaly.detected` | **never dropped** — close with 1013 instead | Rare and high-value; silently discarding one defeats the point of detecting it |
+| `session.closed` | never dropped | Terminal message |
+
+An unbounded queue would let one slow client consume server memory until the process died — ten of them and the answer is an OOM kill. A bounded queue with an explicit drop policy degrades predictably instead: the slow client loses its own data, and nobody else notices. A test proves exactly that, with a stalled client and a healthy one on the same session.
+
+The close code is `1013 Try Again Later`, not `1011 Internal Error`. Nothing is broken; the server is shedding a client it cannot keep up with, and the code tells that client reconnecting is the right response.
+
+### Origin is checked even though there is no authentication
+
+v1 has no authentication — a deliberate scope decision. That is not a reason to skip the one control that needs none. WebSocket is *not* subject to the same-origin policy, so a server that does not check `Origin` lets any page on the internet open a connection on a visitor's behalf. The allowlist is read from configuration, rejects `*` at startup, and is applied **before** the upgrade: a refusal should cost an HTTP response, not a socket, two goroutines and a 256-slot buffer. A test asserts that a rejected origin does not even reach the snapshot query.
+
+### The bug the live run found
+
+Every upgrade returned **500**, with a 22-byte body: `Internal Server Error\n`.
+
+The access-log middleware wraps the response writer to record the status code. A WebSocket upgrade works by hijacking the connection, and the upgrade library type-asserts `http.Hijacker` **directly** rather than going through `http.ResponseController` — so it saw a wrapper that could not be hijacked and failed every handshake. The `Unwrap` method that had been sitting there since phase 3, with a comment claiming it was what the WebSocket upgrade needed, was simply wrong.
+
+No unit test in the WebSocket package could have caught it: those tests mount the handler without the middleware chain. What caught it was running the thing end to end. The regression test now hijacks through the full chain, and inverting the fix turns it red.
+
+### Measured end to end
+
+```
+replay → Kafka → processor → ML → PostgreSQL → Kafka → API fan-out → WebSocket → client
+```
+
+```
+   0  session.snapshot  last_pitch_index=16
+   1  pitch.analyzed    #17   FF   97.6 mph  BALL             pitching=91.7  stuff=101.7
+   2  session.metrics   {"pitch_count":17,...}
+   3  pitch.analyzed    #18   SL   87.5 mph  SWINGING_STRIKE  pitching=90.4  stuff=104.6
+   4  pitch.analyzed    #19   SL   86.9 mph  FOUL             pitching=105.6 stuff=105.1
+```
+
+The snapshot reports `last_pitch_index=16` and the first live pitch is `#17` — no gap. That is precisely what `last_pitch_index` exists to make visible: between the REST read and the moment the connection registers, a pitch can arrive and vanish, and the client has to be able to tell.
+
+Rollups are throttled to one per second. At 800× replay a pitch arrives every few milliseconds, and sending a metrics update with each one would force the browser to re-render hundreds of times a second to display numbers a human cannot read that fast.
+
+### One consumer group per instance
+
+The fan-out consumer uses `ws-fanout-<instance>` rather than a single shared group. A shared group splits partitions between replicas, so a browser connected to the replica that was *not* assigned its session's partition receives nothing — with no error anywhere, because as far as Kafka is concerned the messages were delivered. Each replica reading the whole topic costs bandwidth and gets the semantics right. Phase 8 replaces it with a single consumer fanning out over Redis.
+
+The consumer starts at the latest offset, has no dead-letter queue, and never returns an error. It owns no durable state: the pitch is already committed to PostgreSQL, so a broadcast that cannot be built costs a live update and nothing more. Retrying and then dead-lettering it would stall a partition over a cosmetic problem.
+
+---
+
 ## Observability
 
-Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out to the browser console.
+Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out over the WebSocket to the client. The last hop is now verified: an id taken from a message the client received appears in the inference service's log for the same pitch.
 
 ```
 grep '"correlation_id":"01JX7K..."' → the complete journey of one pitch across every service
@@ -527,8 +592,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 4 | ML inference service | ✅ Complete |
 | 5 | Kafka event architecture | ✅ Complete |
 | 6 | Replay simulator | ✅ Complete |
-| 7 | WebSocket | 🔨 In progress |
-| 8 | Redis | |
+| 7 | WebSocket | ✅ Complete |
+| 8 | Redis | 🔨 In progress |
 | 9 | React dashboard | |
 | 10 | Observability | |
 | 11 | Hardening · chaos, load, security | |
@@ -601,6 +666,22 @@ go run ./cmd/replay --tape data/processed/replay_tape_2025_8.ndjson --speed 30 -
 
 # --dry-run builds and paces the events without publishing
 ```
+
+Watch one outing's live channel from the terminal — the reference client for
+the WebSocket contract, and what stands in for the dashboard until phase 9:
+
+```bash
+go run ./cmd/wsclient --session <session-id>
+```
+
+```
+   0  session.snapshot  last_pitch_index=16
+   1  pitch.analyzed    #17   FF   97.6 mph  BALL             pitching=91.7 stuff=101.7
+   2  session.metrics   {"pitch_count":17,...}
+```
+
+It reconnects with exponential backoff and reports sequence gaps rather than
+assuming every message arrived.
 
 ```bash
 curl localhost:8081/readyz

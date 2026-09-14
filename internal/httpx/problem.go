@@ -77,6 +77,16 @@ func ErrConflict(detail string) *APIError {
 	}
 }
 
+// ErrForbidden is for a request that is well-formed and understood but not
+// allowed. The WebSocket handshake uses it for a rejected Origin: the browser
+// asked correctly, from a site that may not connect.
+func ErrForbidden(detail string) *APIError {
+	return &APIError{
+		Status: http.StatusForbidden, Slug: "forbidden",
+		Title: "Forbidden", Detail: detail,
+	}
+}
+
 func ErrUnprocessable(detail string) *APIError {
 	return &APIError{
 		Status: http.StatusUnprocessableEntity, Slug: "unprocessable",
