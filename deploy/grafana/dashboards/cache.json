@@ -1,0 +1,209 @@
+{
+  "uid": "pitchlab-cache",
+  "title": "PitchLab \u00b7 Cache",
+  "description": "Redis is an accelerator and not a dependency. These panels show whether it is earning its place -- and stay readable when it is gone.",
+  "tags": [
+    "pitchlab",
+    "operations",
+    "cache"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Hit ratio",
+      "description": "Errors are excluded from the denominator: with Redis down every operation fails, and counting those as misses would read as a cache that is merely cold.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "(sum(rate(cache_operations_total{result=\"hit\"}[5m])) or vector(0)) / scalar(clamp_min(sum(rate(cache_operations_total{result=~\"hit|miss\"}[5m])), 0.001))",
+          "legendFormat": "hit ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Operations per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (result) (rate(cache_operations_total[1m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "By operation",
+      "description": "live_record and live_read are the per-pitch counters; analytics_read and analytics_write are the rollup cache.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (operation, result) (rate(cache_operations_total[1m]))",
+          "legendFormat": "{{operation}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache errors",
+      "description": "A sustained error rate with every endpoint still answering is exactly the designed behaviour: Redis down degrades performance and nothing else.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum(rate(cache_operations_total{result=\"error\"}[1m]))",
+          "legendFormat": "errors",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    }
+  ],
+  "editable": true
+}

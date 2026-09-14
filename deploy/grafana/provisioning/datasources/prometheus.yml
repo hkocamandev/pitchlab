@@ -1,0 +1,14 @@
+# Provisioned rather than clicked. A dashboard that depends on a data source
+# somebody configured by hand is a dashboard that does not survive a fresh
+# checkout, which is the whole point of versioning them.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: pitchlab-prometheus
+    jsonData:
+      timeInterval: 10s

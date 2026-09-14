@@ -112,8 +112,9 @@ func NewAnomalyEvaluator(
 }
 
 // OnFinding registers a callback for metrics.
-func (a *AnomalyEvaluator) OnFinding(fn func(metric, severity string)) {
+func (a *AnomalyEvaluator) OnFinding(fn func(metric, severity string)) *AnomalyEvaluator {
 	a.onFinding = fn
+	return a
 }
 
 // Handle records that a session is still producing pitches.

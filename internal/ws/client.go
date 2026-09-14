@@ -132,6 +132,11 @@ func (c *Client) Dropped() uint64 { return c.dropped.Load() }
 // Called before the client is registered, so nothing else can be racing for a
 // sequence number: the snapshot is seq 0 and the first broadcast is seq 1.
 func (c *Client) sendSnapshot(data SnapshotData) {
+	// Counted like any other message. It is one the server sent, and leaving
+	// it out makes the send counter disagree with what the client received --
+	// which is worse than not counting at all, because the number looks
+	// authoritative.
+	c.hub.metrics.sent(TypeSnapshot)
 	c.send <- Message{
 		Type:      TypeSnapshot,
 		Seq:       0,
@@ -158,6 +163,7 @@ func (c *Client) enqueue(m Message) {
 
 	select {
 	case c.send <- m:
+		c.hub.metrics.sent(m.Type)
 		c.checkNearFull()
 		return
 	default:

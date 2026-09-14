@@ -1,0 +1,43 @@
+# Scrape configuration.
+#
+# Targets point at the host, because during development the Go services and
+# the inference service run there while Prometheus runs in a container.
+#
+# The compose service names are listed as commented alternatives rather than as
+# a second target set. Scraping both would mean half the targets are
+# permanently down, and a monitoring stack whose "service up" panel is
+# expected to be half red teaches people to ignore red -- which is the
+# opposite of what it is for. Uncomment the container names when running the
+# services in compose.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: pitchlab-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+      # - targets: ["api:8081"]
+
+  - job_name: pitchlab-processor
+    metrics_path: /metrics
+    static_configs:
+      # The processor has no product API. Its scrape endpoint is on its own
+      # port, because these endpoints must be reachable when the service is
+      # degraded and should not sit alongside an API.
+      - targets: ["host.docker.internal:9091"]
+      # - targets: ["processor:9091"]
+
+  - job_name: pitchlab-ml
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+      # - targets: ["pitchlab-ml:8000"]

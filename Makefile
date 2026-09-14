@@ -12,6 +12,9 @@ DATABASE_URL ?= postgres://$(DB_USER):$(DB_PASS)@$(DB_HOST):$(DB_PORT)/$(DB_NAME
 
 KAFKA_BROKERS ?= localhost:9094
 REDIS_URL     ?= redis://localhost:6379/0
+PROMETHEUS_PORT ?= 9090
+GRAFANA_PORT    ?= 3000
+LOG_DIR         ?= .
 
 MIGRATE_IMAGE := migrate/migrate:v4.18.1
 MIGRATE := docker run --rm --network host \
@@ -138,6 +141,20 @@ web-test: ## Run dashboard tests
 .PHONY: web-build
 web-build: ## Type-check and build the dashboard bundle
 	cd web && npx tsc -b && npm run build
+
+.PHONY: observability
+observability: ## Start Prometheus and Grafana
+	docker compose --profile observability up -d prometheus grafana
+	@echo "prometheus  http://localhost:$(PROMETHEUS_PORT)"
+	@echo "grafana     http://localhost:$(GRAFANA_PORT)  (five dashboards, no login)"
+
+.PHONY: check-dashboards
+check-dashboards: ## Verify every dashboard panel returns data from a live Prometheus
+	$(VENV) scripts/check-dashboards.py
+
+.PHONY: trace
+trace: ## Follow one pitch through every service: make trace CID=<correlation-id>
+	scripts/trace-pitch.sh $(CID) $(LOG_DIR)
 
 .PHONY: seed
 seed: ## Register the replay device and the trained model versions

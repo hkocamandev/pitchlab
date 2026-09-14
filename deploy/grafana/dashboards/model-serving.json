@@ -1,0 +1,462 @@
+{
+  "uid": "pitchlab-ml",
+  "title": "PitchLab \u00b7 Model Serving",
+  "description": "Latency and volume, and the two indicators that would catch a data regime change before anyone noticed the scores were wrong.",
+  "tags": [
+    "pitchlab",
+    "ml",
+    "drift"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Inference latency (p50/p95/p99)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ml_predict_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ml_predict_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ml_predict_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Caller-side latency (p95)",
+      "description": "Measured by the processor rather than inside the service, so it includes the network and any queuing. The gap between this and the panel on the left is the overhead.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model_variant) (rate(ml_inference_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{model_variant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Predictions per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (model_variant) (rate(ml_predictions_total[1m]))",
+          "legendFormat": "{{model_variant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Inference errors",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (model_variant, error_class) (rate(ml_inference_errors_total[1m]))",
+          "legendFormat": "{{model_variant}} {{error_class}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Circuit breaker",
+      "description": "0 closed, 1 half-open, 2 open. Open means the processor stopped calling and is storing pitches unscored.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "ml_circuit_breaker_state",
+          "legendFormat": "state",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Predicted class distribution",
+      "description": "DRIFT INDICATOR. The class mix is stable for a given population. A step change means the inputs changed, and the model will keep answering confidently while it does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (predicted_class) (rate(ml_predicted_class_total[5m])) / scalar(clamp_min(sum(rate(ml_predicted_class_total[5m])), 0.001))",
+          "legendFormat": "{{predicted_class}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 20,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Feature null ratio",
+      "description": "DRIFT INDICATOR. A feature that was always present arriving null is an upstream change: a renamed column, a firmware update, or a rule change like the 2026 zone redefinition found during data analysis.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "topk(10, ml_feature_null_ratio)",
+          "legendFormat": "{{feature_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Explanation latency (p95)",
+      "description": "Attribution costs a model evaluation per feature, which is why it is a separate endpoint and not part of scoring.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model_variant) (rate(ml_explain_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{model_variant}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Model loaded at",
+      "description": "Which build is serving, and since when. A model that silently failed to reload after a deploy is otherwise invisible.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "ml_model_load_timestamp_seconds",
+          "legendFormat": "{{model_variant}} {{model_version}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    }
+  ],
+  "editable": true
+}

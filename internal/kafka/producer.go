@@ -47,6 +47,22 @@ type Producer struct {
 	writer    *kafka.Writer
 	transport *kafka.Transport
 	log       *slog.Logger
+
+	// onProduceError is optional and carries only the topic. Nothing
+	// identifying the message reaches it, because the only caller is a metric.
+	onProduceError func(topic string)
+}
+
+// WithMetrics attaches a publish-failure hook.
+func (p *Producer) WithMetrics(onProduceError func(topic string)) *Producer {
+	p.onProduceError = onProduceError
+	return p
+}
+
+func (p *Producer) recordProduceError(topic string) {
+	if p.onProduceError != nil {
+		p.onProduceError(topic)
+	}
 }
 
 // NewProducer builds a producer.
@@ -127,6 +143,7 @@ func (p *Producer) Publish(ctx context.Context, topic string, env *events.Envelo
 	}
 
 	if err := p.writer.WriteMessages(ctx, msg); err != nil {
+		p.recordProduceError(topic)
 		return fmt.Errorf("publish to %s: %w", topic, err)
 	}
 	return nil
@@ -161,6 +178,7 @@ func (p *Producer) PublishBatch(ctx context.Context, topic string, envs []*event
 	}
 
 	if err := p.writer.WriteMessages(ctx, msgs...); err != nil {
+		p.recordProduceError(topic)
 		return fmt.Errorf("publish %d messages to %s: %w", len(msgs), topic, err)
 	}
 	return nil

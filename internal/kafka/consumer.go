@@ -82,9 +82,29 @@ type Consumer struct {
 // ConsumerMetrics receives per-message outcomes. Nil callbacks are ignored,
 // so wiring metrics is optional and the consumer stays testable without them.
 type ConsumerMetrics struct {
-	OnProcessed func(topic string, class Class, attempts int, d time.Duration)
+	// OnProcessed reports the outcome of one message using the vocabulary
+	// below, not the internal error class.
+	//
+	// They are not the same thing and conflating them was a real defect: the
+	// success path reported ClassTransient, because that is the zero value of
+	// the enum, so every processed message was labelled "transient" and the
+	// dashboard could not tell success from a retryable failure.
+	//
+	//	ok         processed, offset may advance
+	//	duplicate  already done; the natural key absorbed a redelivery
+	//	dlq        gave up and dead-lettered it
+	OnProcessed func(topic string, result string, attempts int, d time.Duration)
 	OnDLQ       func(topic, errorClass string)
-	OnLag       func(topic string, partition int, lag int64)
+
+	// OnLag reports how far behind the head of the topic this reader is.
+	//
+	// Per topic rather than per partition, and sampled rather than taken from
+	// each message. kafka-go's Reader.Lag() is documented as meaningful only
+	// when the reader is *not* in a consumer group; in a group it returns -1,
+	// and reporting that as the pipeline's most important metric is worse
+	// than reporting nothing. ReadLag asks the broker, which costs a round
+	// trip -- so it is sampled on a ticker, not called per message.
+	OnLag func(topic string, lag int64)
 }
 
 // NewConsumer builds a consumer.
@@ -180,10 +200,6 @@ func (c *Consumer) runReader(ctx context.Context, worker int, handle Handler) er
 			return fmt.Errorf("fetch from %s: %w", c.cfg.Topic, err)
 		}
 
-		if c.metrics.OnLag != nil {
-			c.metrics.OnLag(c.cfg.Topic, msg.Partition, reader.Lag())
-		}
-
 		c.processMessage(ctx, log, msg, handle)
 
 		// The offset advances only now, after the work is durably done.
@@ -222,7 +238,7 @@ func (c *Consumer) processMessage(
 		log.Error("unparseable message", "error_class", class,
 			"partition", msg.Partition, "offset", msg.Offset, "error", err)
 		c.deadLetter(ctx, log, msg, class, err, 1)
-		c.recordProcessed(ClassPermanent, 1, started)
+		c.recordProcessed(ResultDLQ, 1, started)
 		return
 	}
 
@@ -233,7 +249,7 @@ func (c *Consumer) processMessage(
 	for attempt := 1; attempt <= c.cfg.MaxAttempts; attempt++ {
 		lastErr = handle(ctx, env)
 		if lastErr == nil {
-			c.recordProcessed(ClassTransient, attempt, started)
+			c.recordProcessed(ResultOK, attempt, started)
 			return
 		}
 
@@ -243,14 +259,14 @@ func (c *Consumer) processMessage(
 			// info so the idempotency machinery is visibly working.
 			log.Info("duplicate message ignored",
 				"idempotency_key", env.IdempotencyKey)
-			c.recordProcessed(ClassDuplicate, attempt, started)
+			c.recordProcessed(ResultDuplicate, attempt, started)
 			return
 
 		case ClassPermanent:
 			log.Error("permanent failure; dead-lettering",
 				"attempt", attempt, "error", lastErr)
 			c.deadLetter(ctx, log, msg, errorClass(lastErr), lastErr, attempt)
-			c.recordProcessed(ClassPermanent, attempt, started)
+			c.recordProcessed(ResultDLQ, attempt, started)
 			return
 
 		case ClassTransient:
@@ -274,7 +290,7 @@ func (c *Consumer) processMessage(
 	log.Error("retries exhausted; dead-lettering",
 		"attempts", c.cfg.MaxAttempts, "error", lastErr)
 	c.deadLetter(ctx, log, msg, "RETRY_EXHAUSTED", lastErr, c.cfg.MaxAttempts)
-	c.recordProcessed(ClassPermanent, c.cfg.MaxAttempts, started)
+	c.recordProcessed(ResultDLQ, c.cfg.MaxAttempts, started)
 }
 
 // backoff returns an exponentially growing delay with jitter.
@@ -405,9 +421,16 @@ func (c *Consumer) deadLetter(
 	}
 }
 
-func (c *Consumer) recordProcessed(class Class, attempts int, started time.Time) {
+// Message outcomes, as reported to metrics.
+const (
+	ResultOK        = "ok"
+	ResultDuplicate = "duplicate"
+	ResultDLQ       = "dlq"
+)
+
+func (c *Consumer) recordProcessed(result string, attempts int, started time.Time) {
 	if c.metrics.OnProcessed != nil {
-		c.metrics.OnProcessed(c.cfg.Topic, class, attempts, time.Since(started))
+		c.metrics.OnProcessed(c.cfg.Topic, result, attempts, time.Since(started))
 	}
 }
 

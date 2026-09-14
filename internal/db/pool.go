@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,6 +27,11 @@ type PoolConfig struct {
 	MaxConnIdleTime time.Duration
 
 	ConnectTimeout time.Duration
+
+	// Tracer observes every query. Typed as pgx's own interface so this
+	// package stays free of any metrics dependency: the observability layer
+	// supplies an implementation, and a test supplies none.
+	Tracer pgx.QueryTracer
 }
 
 // DefaultPoolConfig returns sensible defaults for the given URL.
@@ -55,6 +61,9 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 	pcfg.MaxConnLifetime = cfg.MaxConnLifetime
 	pcfg.MaxConnIdleTime = cfg.MaxConnIdleTime
 	pcfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	if cfg.Tracer != nil {
+		pcfg.ConnConfig.Tracer = cfg.Tracer
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {

@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: pitchlab
+    orgId: 1
+    folder: PitchLab
+    type: file
+    disableDeletion: false
+    # Reloaded from disk, so editing a dashboard JSON in the repository is
+    # reflected without rebuilding anything.
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
