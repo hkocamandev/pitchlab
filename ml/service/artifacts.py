@@ -15,7 +15,6 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-
 from pitchlab_ml import config, features, runvalue
 
 log = logging.getLogger(__name__)

@@ -32,7 +32,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config, features, labels, train  # noqa: E402
+from pitchlab_ml import config, features, labels
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-5s %(message)s"
@@ -91,7 +91,8 @@ def main() -> int:
     snapshot = args.snapshot or sorted(config.RAW_DIR.glob("statcast_*.parquet"))[-1]
 
     log.info("loading %s", snapshot.name)
-    cols = features.required_raw_columns() + [
+    cols = [
+        *features.required_raw_columns(),
         "pitch_name", "game_type", "inning_topbot", "player_name",
     ]
     raw = pd.read_parquet(snapshot, columns=sorted(set(cols)))

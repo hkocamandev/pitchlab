@@ -185,7 +185,7 @@ func startFanout(
 
 	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9094"), ",")
 	fanout := api.NewFanout(hub, log)
-	onProcessed, onDLQ := metrics.ConsumerHooks()
+	onProcessed, onDLQ, onFetchError := metrics.ConsumerHooks()
 
 	// A group per instance, not one group shared by every replica.
 	//
@@ -212,7 +212,7 @@ func startFanout(
 		cfg.DLQTopic = ""
 
 		consumer := pkafka.NewConsumer(cfg, nil, log).WithMetrics(pkafka.ConsumerMetrics{
-			OnProcessed: onProcessed, OnDLQ: onDLQ,
+			OnProcessed: onProcessed, OnDLQ: onDLQ, OnFetchError: onFetchError,
 		})
 
 		sampler := pkafka.NewLagSampler(brokers, topic, group, log, metrics.LagHook())

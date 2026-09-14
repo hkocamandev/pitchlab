@@ -24,7 +24,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config  # noqa: E402
+from pitchlab_ml import config
 
 
 def latest_snapshot() -> Path:

@@ -23,7 +23,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config, ingest  # noqa: E402
+from pitchlab_ml import config, ingest
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-5s %(message)s"
@@ -101,7 +101,7 @@ def main() -> int:
         lines.append(text)
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    emit(f"# FAZ 1 — Veri Doğrulama Raporu (A1–A7)")
+    emit("# FAZ 1 — Veri Doğrulama Raporu (A1–A7)")
     emit()
     emit(f"> Üretim tarihi: {stamp}")
     emit(f"> Örneklem pencereleri: {WINDOW_2025[0]}..{WINDOW_2025[1]} (2025) ve "

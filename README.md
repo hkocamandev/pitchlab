@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-phases%200%E2%80%9310%20complete-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-phases%200%E2%80%9311%20complete-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -713,6 +713,64 @@ Distributed tracing is still *not* included. At three processes on one machine, 
 
 ---
 
+## What breaks it, and what happens then
+
+The claims this design makes about failure — "Redis is not critical", "no pitch is lost", "the processor recovers" — are statements about behaviour under conditions no ordinary test creates. They are checked by stopping real containers while real traffic is flowing, behind their own build tag because they take minutes and disturb shared infrastructure.
+
+| Scenario | Result |
+|---|---|
+| PostgreSQL stopped mid-stream | 30 pitches: **20 written, 10 dead-lettered, 0 lost**; the pipeline resumed with no restart |
+| Redis stopped mid-stream | 15/15 written, nothing dead-lettered |
+| Inference unreachable | 12/12 stored and marked `FAILED`; **zero fabricated predictions** |
+| Consumer killed between the work and the commit | 10 pitches → **10 rows** |
+| Kafka stopped entirely | the process **survived** and resumed |
+
+### "No data loss" means recoverable, not uninterrupted
+
+The retry budget is five attempts over about three seconds, and it is short on purpose: retries block the partition, so a generous budget means one unavailable dependency stalls every pitch queued behind it. A database restart takes longer than that, so pitches thrown during the outage are dead-lettered rather than retried indefinitely.
+
+That trade is only acceptable because the dead letter is a durable record that `cmd/dlq-replay` can replay. The test counts it: 20 + 10 = 30.
+
+### The bug the chaos suite found, in a place nobody was looking
+
+A 500-connection load test exhausted local file descriptors. The processor got `dial tcp: resource temporarily unavailable` and **exited**.
+
+A failed poll returned an error that propagated to `main`. One transient dial failure — a broker restarting, a rebalance, a machine briefly out of sockets — killed the stream processor and left recovery entirely to whatever was supposed to restart it. A rolling broker upgrade is the most ordinary version of that in production.
+
+The consumer now backs off and keeps asking, because the reader reconnects on its own and only needs the loop to survive. Restoring the old `return` turns the test red, so the fix is not passing vacuously.
+
+### Measured
+
+| | |
+|---|---|
+| REST, 50 workers | **1,484 rps**, p50 31 ms, **p99 78 ms**, max 110 ms, **0 failures** |
+| WebSocket | **500/500** connections opened, none refused, no slow consumers |
+| Burst production | 3,387 pitches in 39 s = **86.7 pitches/s** |
+| Pipeline processing | **28.4 ms per pitch**, including two inference calls and a database transaction |
+| Cache hit ratio | 99.9% |
+
+The acceptance criterion was a p99 under 500 ms.
+
+Load testing also found that the Redis pool was sized at ten connections against fifty concurrent workers. The behaviour was correct — calls timed out at 50 ms and fell through to PostgreSQL, and no request failed — but the cache was quietly doing less work than it appeared to. Raising the pool and pre-opening idle connections took the error count from 33 to 9 and the **maximum latency from 2.6 s to 110 ms**: the cold-start dial cost disappeared entirely.
+
+And a labelling bug: successful cache *writes* were being counted as hits, inflating the hit ratio with operations that were never lookups.
+
+### Security baseline
+
+Zero known vulnerabilities across Go, npm and pip — after closing three. `golang.org/x/text` had a reachable infinite-loop advisory (the call trace ran through `db.NewPool`), `react-router` had an open redirect that is not exploitable here but shipped in the production bundle, and `vitest` had a dev-only path traversal. All three were upgraded with no source changes and no test failures.
+
+The dashboard container was starting as root: the stock nginx image runs its master as root and drops privileges only for workers. It now runs entirely unprivileged on port 8080, because a non-root process cannot bind a privileged port.
+
+There is no SQL injection surface — no query is built by concatenation, and the single hand-written query is parameterised. `ruff` went from 418 findings to zero, with `E402` deliberately left *enabled* so the explicit `# noqa` on each script's deferred imports stays meaningful.
+
+### What was deliberately not fixed
+
+`docs/hardening-report.md` lists eleven open items with reasons. The short version: no rate limiting (without authentication it would be per-IP, protecting nothing); no `EXPLAIN` hunt (the rule was not to optimise without measuring, and the measurement found nothing to optimise); no OpenTelemetry (`correlation_id` did not fall short — `make trace` reconstructs a pitch's whole journey); no 2026 regime correction (phase 10 made the drift *visible*; correcting it needs a verifiable transform between two regimes, and detection correctly comes first).
+
+The integration and chaos suites are **not** in CI. They need a broker, a database and a cache, and the chaos suite stops containers while traffic is flowing. Running them against a half-started service and calling it green would be worse than saying they run locally.
+
+---
+
 ## Tech stack
 
 | Layer | Choice | Why |
@@ -761,8 +819,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 8 | Redis | ✅ Complete |
 | 9 | React dashboard | ✅ Complete |
 | 10 | Observability | ✅ Complete |
-| 11 | Hardening · chaos, load, security | 🔨 In progress |
-| 12 | Demo & documentation | |
+| 11 | Hardening · chaos, load, security | ✅ Complete |
+| 12 | Demo & documentation | 🔨 In progress |
 
 Each phase produces something demonstrable on its own — no phase leaves an intermediate artifact that "only makes sense next time."
 
@@ -878,6 +936,15 @@ through every service:
 
 ```bash
 make trace CID=<correlation-id>
+```
+
+Try to break it:
+
+```bash
+make test-chaos    # stops PostgreSQL, Redis, Kafka and the consumer under live traffic
+make loadtest ATHLETE=<id> SESSION=<id>
+make loadtest-ws SESSION=<id>
+make audit         # govulncheck, npm audit, pip-audit, ruff
 ```
 
 Prove the cache is not load-bearing:

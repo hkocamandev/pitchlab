@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "ml"))
 
 from pitchlab_ml import config, features, labels, runvalue  # noqa: E402
+
 from ml.service import artifacts  # noqa: E402
 from ml.service.app import app  # noqa: E402
 
@@ -203,7 +204,7 @@ def test_batching_does_not_change_results(client, sample_frame):
                           json={"variant": "pitching", "pitches": [pitch]}).json()
         singles.append(one["predictions"][0])
 
-    for b, s in zip(batch["predictions"], singles):
+    for b, s in zip(batch["predictions"], singles, strict=True):
         assert b["score"] == pytest.approx(s["score"], abs=1e-9)
         assert b["predicted_class"] == s["predicted_class"]
 

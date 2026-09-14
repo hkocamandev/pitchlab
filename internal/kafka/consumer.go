@@ -96,15 +96,13 @@ type ConsumerMetrics struct {
 	OnProcessed func(topic string, result string, attempts int, d time.Duration)
 	OnDLQ       func(topic, errorClass string)
 
-	// OnLag reports how far behind the head of the topic this reader is.
+	// OnFetchError reports a failed poll. Separate from OnProcessed because
+	// nothing was processed: the consumer could not reach the broker at all.
 	//
-	// Per topic rather than per partition, and sampled rather than taken from
-	// each message. kafka-go's Reader.Lag() is documented as meaningful only
-	// when the reader is *not* in a consumer group; in a group it returns -1,
-	// and reporting that as the pipeline's most important metric is worse
-	// than reporting nothing. ReadLag asks the broker, which costs a round
-	// trip -- so it is sampled on a ticker, not called per message.
-	OnLag func(topic string, lag int64)
+	// Consumer lag is deliberately not here. A reader inside a consumer group
+	// cannot report its own lag, so it is sampled from the broker by
+	// LagSampler instead.
+	OnFetchError func(topic string)
 }
 
 // NewConsumer builds a consumer.
@@ -188,6 +186,11 @@ func (c *Consumer) runReader(ctx context.Context, worker int, handle Handler) er
 	log := c.log.With("topic", c.cfg.Topic, "group", c.cfg.GroupID, "worker", worker)
 	log.Info("consumer started")
 
+	// Consecutive fetch failures, used only to grow the backoff. Reset on the
+	// first success, so an hour of healthy consumption does not make the next
+	// blip wait the maximum.
+	fetchFailures := 0
+
 	for {
 		// FetchMessage, not ReadMessage: ReadMessage commits for you, which
 		// is the same mistake as auto-commit wearing a different hat.
@@ -197,8 +200,34 @@ func (c *Consumer) runReader(ctx context.Context, worker int, handle Handler) er
 				log.Info("consumer stopping")
 				return nil
 			}
-			return fmt.Errorf("fetch from %s: %w", c.cfg.Topic, err)
+
+			// A failed fetch is not a reason to end the process.
+			//
+			// This used to return the error, which propagated to main and
+			// exited. A single transient dial failure -- a broker restarting,
+			// a rebalance, or a machine briefly out of sockets -- killed the
+			// stream processor and left recovery entirely to whatever was
+			// supposed to restart it. It was found by a load test exhausting
+			// local file descriptors, which is the mildest possible version of
+			// a problem that in production is a rolling broker upgrade.
+			//
+			// The reader reconnects on its own; what it needs is for the loop
+			// to keep asking. Backing off first so an unreachable broker is not
+			// hammered.
+			fetchFailures++
+			delay := c.backoff(min(fetchFailures, c.cfg.MaxAttempts))
+			log.Warn("fetch failed; retrying",
+				"consecutive_failures", fetchFailures, "retry_in", delay, "error", err)
+			c.recordFetchError(c.cfg.Topic)
+
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil
+			}
+			continue
 		}
+		fetchFailures = 0
 
 		c.processMessage(ctx, log, msg, handle)
 
@@ -427,6 +456,12 @@ const (
 	ResultDuplicate = "duplicate"
 	ResultDLQ       = "dlq"
 )
+
+func (c *Consumer) recordFetchError(topic string) {
+	if c.metrics.OnFetchError != nil {
+		c.metrics.OnFetchError(topic)
+	}
+}
 
 func (c *Consumer) recordProcessed(result string, attempts int, started time.Time) {
 	if c.metrics.OnProcessed != nil {

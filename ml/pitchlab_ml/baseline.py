@@ -39,7 +39,7 @@ class PriorBaseline:
     _table: pd.DataFrame | None = field(default=None, repr=False)
     _global: np.ndarray | None = field(default=None, repr=False)
 
-    def fit(self, df: pd.DataFrame) -> "PriorBaseline":
+    def fit(self, df: pd.DataFrame) -> PriorBaseline:
         target = df[TARGET].astype(str)
         counts = target.value_counts().reindex(config.CLASS_LABELS).fillna(0.0)
         self._global = (counts / counts.sum()).to_numpy(dtype=float)

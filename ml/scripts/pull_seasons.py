@@ -22,7 +22,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config, ingest  # noqa: E402
+from pitchlab_ml import config, ingest
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-5s %(message)s"

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
-
 from pitchlab_ml import config
+from pydantic import BaseModel, Field, model_validator
 
 Variant = Literal["pitching", "stuff"]
 
@@ -33,7 +32,7 @@ class PitchFeatures(BaseModel):
     features: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _reject_empty(self) -> "PitchFeatures":
+    def _reject_empty(self) -> PitchFeatures:
         if not self.features:
             raise ValueError("features must not be empty")
         return self

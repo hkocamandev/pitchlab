@@ -79,7 +79,7 @@ func (c *Cache) RecordPitch(
 
 	key := liveKey(sessionID)
 
-	c.call(ctx, "live_record", func(ctx context.Context) error {
+	c.call(ctx, "live_record", ResultOK, func(ctx context.Context) error {
 		// One round trip. Issuing eight commands separately would put eight
 		// network latencies on the per-pitch path.
 		pipe := c.rdb.Pipeline()
@@ -136,7 +136,7 @@ func (c *Cache) LiveSession(
 	}
 
 	var raw map[string]string
-	ok := c.call(ctx, "live_read", func(ctx context.Context) error {
+	ok := c.call(ctx, "live_read", ResultHit, func(ctx context.Context) error {
 		var err error
 		raw, err = c.rdb.HGetAll(ctx, liveKey(sessionID)).Result()
 		return err
@@ -175,7 +175,7 @@ func (c *Cache) DropLiveSession(ctx context.Context, sessionID uuid.UUID) {
 	if !c.enabled() {
 		return
 	}
-	c.call(ctx, "live_drop", func(ctx context.Context) error {
+	c.call(ctx, "live_drop", ResultOK, func(ctx context.Context) error {
 		return c.rdb.Del(ctx, liveKey(sessionID)).Err()
 	})
 }

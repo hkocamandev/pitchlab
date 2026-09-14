@@ -51,9 +51,15 @@ const (
 )
 
 // Result labels for the metrics callback.
+//
+// A write has no "hit": it either happened or it did not. Reporting a
+// successful write as a hit inflated the hit ratio with operations that were
+// never lookups, which is the kind of metric that looks healthy precisely
+// because it is measuring the wrong thing.
 const (
 	ResultHit   = "hit"
 	ResultMiss  = "miss"
+	ResultOK    = "ok"
 	ResultError = "error"
 )
 
@@ -80,8 +86,19 @@ type Cache struct {
 
 // Config configures the connection.
 type Config struct {
-	URL          string
-	PoolSize     int
+	URL string
+	// PoolSize has to keep up with the number of requests that can be in
+	// flight at once. Measured: with ten connections and fifty concurrent HTTP
+	// workers, a fraction of calls queued past the 50ms deadline and fell
+	// through to PostgreSQL -- correct behaviour, but the cache was silently
+	// doing less work than it appeared to.
+	PoolSize int
+	// MinIdleConns pre-opens connections so the first requests after start do
+	// not each pay a dial inside the 50ms budget. Without it the errors are
+	// harmless -- the call falls through to PostgreSQL -- but they are also
+	// misleading: an error counter that always shows a burst at startup is one
+	// people learn to ignore.
+	MinIdleConns int
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
@@ -91,7 +108,8 @@ type Config struct {
 func DefaultConfig(url string) Config {
 	return Config{
 		URL:          url,
-		PoolSize:     10,
+		PoolSize:     64,
+		MinIdleConns: 8,
 		DialTimeout:  Timeout,
 		ReadTimeout:  Timeout,
 		WriteTimeout: Timeout,
@@ -111,6 +129,7 @@ func New(cfg Config, log *slog.Logger) (*Cache, error) {
 	}
 
 	opts.PoolSize = cfg.PoolSize
+	opts.MinIdleConns = cfg.MinIdleConns
 	opts.DialTimeout = cfg.DialTimeout
 	opts.ReadTimeout = cfg.ReadTimeout
 	opts.WriteTimeout = cfg.WriteTimeout
@@ -162,7 +181,13 @@ func (c *Cache) enabled() bool { return c != nil && c.rdb != nil }
 // It converts a failure into a logged miss. The error is deliberately not
 // returned: giving callers an error to handle is giving them a chance to
 // handle it wrongly, and the only correct handling is to ignore it.
-func (c *Cache) call(ctx context.Context, name string, fn func(context.Context) error) bool {
+//
+// success is the label recorded when the operation works -- "hit" for a
+// lookup, "ok" for a write -- because a hit ratio computed over writes is not
+// a hit ratio.
+func (c *Cache) call(
+	ctx context.Context, name, success string, fn func(context.Context) error,
+) bool {
 	if !c.enabled() {
 		return false
 	}
@@ -173,7 +198,7 @@ func (c *Cache) call(ctx context.Context, name string, fn func(context.Context) 
 	err := fn(ctx)
 	switch {
 	case err == nil:
-		c.metrics.record(name, ResultHit)
+		c.metrics.record(name, success)
 		return true
 	case errors.Is(err, redis.Nil):
 		// Not an error: the key is simply not there.

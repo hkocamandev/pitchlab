@@ -37,7 +37,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pitchlab_ml import config, labels  # noqa: E402
+from pitchlab_ml import config, labels
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
 log = logging.getLogger("tape")
@@ -64,7 +64,9 @@ REQUIRED = [
     # ground-truth block, and it is dropped from the frame before anything is
     # written. It never travels as a measurement.
     "description",
-] + MEASUREMENT_FIELDS + CONTEXT_FIELDS
+    *MEASUREMENT_FIELDS,
+    *CONTEXT_FIELDS,
+]
 
 
 def clean(v):
