@@ -31,6 +31,7 @@ import (
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/events"
 	pkafka "github.com/hkocamandev/pitchlab/internal/kafka"
+	"github.com/hkocamandev/pitchlab/internal/mlclient"
 	"github.com/hkocamandev/pitchlab/internal/ws"
 )
 
@@ -97,8 +98,23 @@ func run() error {
 
 	fanoutDone := startFanout(ctx, hub, log)
 
+	// Used only for on-demand explanations. Scores are written by the
+	// processor and read from the database; the API never scores a pitch on
+	// the request path.
+	//
+	// The deadline is longer than the processor's two seconds, and that is not
+	// an oversight. Attribution costs a model evaluation per feature, and the
+	// first request for a variant also builds the explainer -- measured at
+	// over five seconds. The processor's short timeout is right for scoring,
+	// where a hung service would hold a Kafka partition hostage; here the only
+	// thing waiting is one person who asked about one pitch.
+	mlCfg := mlclient.DefaultConfig(env("PITCHLAB_ML_URL", "http://localhost:8000"))
+	mlCfg.Timeout = duration("PITCHLAB_EXPLAIN_TIMEOUT", 20*time.Second)
+	ml := mlclient.New(mlCfg, log)
+
 	srv := api.New(cfg, store, log).
 		WithCache(redis).
+		WithInference(ml).
 		WithWebSocket(hub).
 		HTTPServer()
 
@@ -199,6 +215,15 @@ func instanceID() string {
 		return host + "-" + strconv.Itoa(os.Getpid())
 	}
 	return uuid.NewString()
+}
+
+func duration(key string, fallback time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
 }
 
 func env(key, fallback string) string {

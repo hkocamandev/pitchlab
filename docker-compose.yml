@@ -131,6 +131,17 @@ services:
       retries: 5
       start_period: 30s
 
+  web:
+    # The dashboard is a static bundle behind nginx, which also proxies the API
+    # and the live channel so the browser sees a single origin. Under a
+    # profile because the demo stack is usually driven from the dev server.
+    build:
+      context: ./web
+    container_name: pitchlab-web
+    ports:
+      - "${PITCHLAB_WEB_PORT:-5174}:80"
+    profiles: ["web"]
+
 volumes:
   postgres-data:
   kafka-data:

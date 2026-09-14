@@ -119,6 +119,26 @@ replay: ## Replay a tape into Kafka as a live device feed
 watch: ## Follow one session's live channel from the terminal
 	go run ./cmd/wsclient --session $(SESSION)
 
+.PHONY: ts-types
+ts-types: ## Regenerate the dashboard's TypeScript types from the Go DTOs
+	go run ./cmd/tsgen
+
+.PHONY: web-install
+web-install: ## Install dashboard dependencies
+	cd web && npm ci
+
+.PHONY: web
+web: ## Run the dashboard dev server on :5173 (proxies the API)
+	cd web && npm run dev
+
+.PHONY: web-test
+web-test: ## Run dashboard tests
+	cd web && npm run test
+
+.PHONY: web-build
+web-build: ## Type-check and build the dashboard bundle
+	cd web && npx tsc -b && npm run build
+
 .PHONY: seed
 seed: ## Register the replay device and the trained model versions
 	go run ./cmd/seed
@@ -197,4 +217,4 @@ ml-load: ## Load pitches straight into PostgreSQL, bypassing the pipeline
 # --- combined --------------------------------------------------------------
 
 .PHONY: check
-check: vet test ml-test ## Everything that must pass before a commit
+check: vet test ml-test web-test ## Everything that must pass before a commit

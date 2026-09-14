@@ -10,6 +10,7 @@ import (
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/httpx"
+	"github.com/hkocamandev/pitchlab/internal/mlclient"
 )
 
 // Server holds the handler dependencies.
@@ -27,6 +28,10 @@ type Server struct {
 	// there is no "is the cache configured" branch in any handler, and no path
 	// by which a Redis problem becomes a failed request.
 	cache *cache.Cache
+	// ml is optional too, and only the explanation endpoint uses it. Scores
+	// are computed by the stream processor and read from the database; this
+	// API never scores a pitch on the request path.
+	ml *mlclient.Client
 }
 
 // RedisChecker is the slice of Redis the API needs for readiness. Keeping it
@@ -44,6 +49,18 @@ func New(cfg config.API, store *db.Store, log *slog.Logger) *Server {
 // WithRedis attaches a cache for readiness reporting.
 func (s *Server) WithRedis(r RedisChecker) *Server {
 	s.redis = r
+	return s
+}
+
+// WithInference attaches the inference client used for on-demand
+// explanations.
+//
+// Deliberately not used for scoring. A prediction belongs to the pitch and is
+// written once, by the processor, with the model version that produced it;
+// scoring again on a read would produce a number that disagrees with the
+// stored one as soon as the model is retrained.
+func (s *Server) WithInference(ml *mlclient.Client) *Server {
+	s.ml = ml
 	return s
 }
 
@@ -85,6 +102,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/v1/sessions/{sessionId}/close", s.handler(s.closeSession))
 
 	// pitches and predictions
+	mux.Handle("GET /api/v1/pitches/{pitchId}/explanation", s.handler(s.getPitchExplanation))
 	mux.Handle("GET /api/v1/pitches", s.handler(s.listPitches))
 	mux.Handle("GET /api/v1/pitches/{pitchId}", s.handler(s.getPitch))
 	mux.Handle("GET /api/v1/pitches/{pitchId}/predictions", s.handler(s.listPitchPredictions))
