@@ -32,6 +32,7 @@ import (
 	"github.com/hkocamandev/pitchlab/internal/events"
 	pkafka "github.com/hkocamandev/pitchlab/internal/kafka"
 	"github.com/hkocamandev/pitchlab/internal/mlclient"
+	"github.com/hkocamandev/pitchlab/internal/observability"
 	"github.com/hkocamandev/pitchlab/internal/ws"
 )
 
@@ -66,7 +67,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.NewPool(ctx, db.DefaultPoolConfig(cfg.DatabaseURL))
+	metrics := observability.New()
+
+	poolCfg := db.DefaultPoolConfig(cfg.DatabaseURL)
+	poolCfg.Tracer = observability.NewQueryTracer(metrics)
+
+	pool, err := db.NewPool(ctx, poolCfg)
 	if err != nil {
 		return err
 	}
@@ -82,13 +88,20 @@ func run() error {
 		log.Warn("cache disabled; continuing without it", "error", err)
 		redis = nil
 	}
+	redis = redis.WithMetrics(cache.Metrics{OnOperation: metrics.CacheHook()})
 	defer func() {
 		if err := redis.Close(); err != nil {
 			log.Warn("close cache", "error", err)
 		}
 	}()
 
-	hub := ws.NewHub(log)
+	onSent, onDropped, onSlow := metrics.WebSocketHooks()
+	hub := ws.NewHub(log).WithMetrics(ws.HubMetrics{
+		OnSent: onSent, OnDropped: onDropped, OnSlowConsumer: onSlow,
+	})
+	// Read from the hub at scrape time rather than counted on connect and
+	// disconnect, so the number cannot drift from the truth.
+	metrics.TrackWebSocketConnections(hub.Clients)
 	var hubDone sync.WaitGroup
 	hubDone.Add(1)
 	go func() {
@@ -96,7 +109,7 @@ func run() error {
 		hub.Run(ctx)
 	}()
 
-	fanoutDone := startFanout(ctx, hub, log)
+	fanoutDone := startFanout(ctx, hub, metrics, log)
 
 	// Used only for on-demand explanations. Scores are written by the
 	// processor and read from the database; the API never scores a pitch on
@@ -111,8 +124,10 @@ func run() error {
 	mlCfg := mlclient.DefaultConfig(env("PITCHLAB_ML_URL", "http://localhost:8000"))
 	mlCfg.Timeout = duration("PITCHLAB_EXPLAIN_TIMEOUT", 20*time.Second)
 	ml := mlclient.New(mlCfg, log)
+	metrics.TrackBreaker(func() string { return ml.BreakerState().String() })
 
 	srv := api.New(cfg, store, log).
+		WithMetrics(metrics).
 		WithCache(redis).
 		WithInference(ml).
 		WithWebSocket(hub).
@@ -162,11 +177,15 @@ func run() error {
 // broker that is unreachable costs live updates and nothing else. Refusing to
 // start the API over it would take the REST surface down for a cache-shaped
 // problem.
-func startFanout(ctx context.Context, hub *ws.Hub, log *slog.Logger) *sync.WaitGroup {
+func startFanout(
+	ctx context.Context, hub *ws.Hub, metrics *observability.Metrics,
+	log *slog.Logger,
+) *sync.WaitGroup {
 	var wg sync.WaitGroup
 
 	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9094"), ",")
 	fanout := api.NewFanout(hub, log)
+	onProcessed, onDLQ := metrics.ConsumerHooks()
 
 	// A group per instance, not one group shared by every replica.
 	//
@@ -192,7 +211,12 @@ func startFanout(ctx context.Context, hub *ws.Hub, log *slog.Logger) *sync.WaitG
 		// no value later.
 		cfg.DLQTopic = ""
 
-		consumer := pkafka.NewConsumer(cfg, nil, log)
+		consumer := pkafka.NewConsumer(cfg, nil, log).WithMetrics(pkafka.ConsumerMetrics{
+			OnProcessed: onProcessed, OnDLQ: onDLQ,
+		})
+
+		sampler := pkafka.NewLagSampler(brokers, topic, group, log, metrics.LagHook())
+		go sampler.Run(ctx)
 
 		wg.Add(1)
 		go func(topic string) {

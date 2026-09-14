@@ -2,7 +2,7 @@
 
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
-[![Status](https://img.shields.io/badge/status-phases%200%E2%80%939%20complete-blue)](#roadmap)
+[![Status](https://img.shields.io/badge/status-phases%200%E2%80%9310%20complete-blue)](#roadmap)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
@@ -637,17 +637,79 @@ The prediction is shown next to what actually happened, including on the pitches
 
 ## Observability
 
-Every pitch carries a single `correlation_id` (UUIDv7) from the simulator, through the Kafka envelope, into the HTTP call to the ML service, back into the downstream event, and out over the WebSocket to the client. The last hop is now verified: an id taken from a message the client received appears in the inference service's log for the same pitch.
+Every metric in the project is declared in one file. The rule that matters most for metrics is a cardinality rule — no identifier ever becomes a label — and a rule is only enforceable if there is one place to check. A metric declared next to the code that increments it is a metric nobody reviews.
+
+Two tests ask two different questions: does any metric carry a forbidden label *name*, and does any label *value* look like a UUID. The second is the stronger one, because an innocently named label can still carry an identifier — `route` would, if it were the requested path rather than the registered pattern. A third asserts that 500 requests across two endpoints produce two time series, not five hundred.
+
+That is also why the HTTP instrumentation wraps each route at registration rather than wrapping the mux once: a middleware around the mux cannot know which pattern matched, and `/api/v1/athletes/{athleteId}` is one series while the paths it matches are one per athlete.
+
+Error text is never a label either. An error message can contain a host, a port, an identifier or a whole SQL statement, and using it as a label value is the same mistake as labelling by session id — only harder to notice. Failures are reduced to a fixed vocabulary, and a test feeds fifty distinct error strings through and asserts one series comes out.
+
+### Gauges are read from their source
+
+`websocket_connections_active` and `ml_circuit_breaker_state` are not incremented and decremented on events; they are read at scrape time from the hub and the breaker. A counted gauge drifts the first time a disconnect path is missed, and it drifts *silently* — the graph stays plausible while it stops matching reality. This matters most for the breaker, whose state changes on failure paths, which are the paths whose instrumentation is least often exercised.
+
+### Query names come from the generated SQL
+
+`db_query_duration_seconds` is collected by a pgx tracer rather than by wrapping call sites, because the call sites are generated code. The label is extracted from the generated query's own header comment (`-- name: GetAthlete :one`), so it is bounded by the number of queries in the repository; the SQL text would be one series per statement, including any built at runtime.
+
+### Four bugs the instrumentation work found
+
+**Successful messages were labelled "transient."** The consumer reported its internal error class as the metric's result, and `ClassTransient` is the enum's zero value — so every processed message was counted as a retryable failure and the dashboard could not tell success apart from one. The metric now has its own vocabulary: `ok`, `duplicate`, `dlq`.
+
+**Consumer lag reported −1** — the number the design calls the most important in the pipeline. `kafka-go`'s `Reader.Lag()` is documented as meaningful only outside a consumer group and returns −1 inside one; `ReadLag` refuses outright for a group reader. Both were tried. Lag is now computed the way a lag exporter computes it: ask the broker for the group's committed offsets and each partition's log end, and subtract. Under burst replay one partition showed a lag of 7 and the rest zero — which is the partition key working, since a whole outing lands on one partition.
+
+**Three dashboard panels rendered nothing.** `sum by (predicted_class) (rate(...)) / clamp_min(sum(rate(...)), 0.001)` is valid PromQL that means what it looks like it means and returns an empty vector: the numerator carries a label the denominator does not, and vector-to-vector division requires identical label sets. The error-rate panel had the same shape, so a zero error rate was indistinguishable from a broken panel.
+
+**The opening snapshot was not counted** as a sent WebSocket message. A send counter that disagrees with what the client received is worse than no counter, because the number looks authoritative.
+
+### Dashboards are checked from both sides
+
+A dashboard is a file full of strings that are never compiled and never imported, so a renamed metric breaks a panel and nothing fails — until someone opens Grafana during an incident. A package test checks that every panel names a metric something actually exports; `make check-dashboards` runs all 41 queries against a live Prometheus. Panels that are *expected* to be empty are exempted by title, with the reason recorded, so a panel renamed without thought loses its exemption:
 
 ```
-grep '"correlation_id":"01JX7K..."' → the complete journey of one pitch across every service
+41 queries across 5 dashboards
+
+empty, and expected to be:
+  Dead letters      Nothing has been dead-lettered, which is the goal.
+  Inference errors  No inference call has failed.
+  ...
+every other panel returned data
 ```
 
-Instrumentation covers HTTP latency and request counts, Kafka consumer lag and processing rate, DLQ counters, ML inference latency, WebSocket connections and **dropped messages** (the backpressure signal), cache hit/miss, and — for drift detection — predicted-class distribution and per-feature null ratios.
+### `/healthz` checks nothing, and that is tested
 
-`/healthz` deliberately checks **nothing**. If liveness probed the database, a brief PostgreSQL slowdown would mark every instance unhealthy, trigger a simultaneous restart, and turn a blip into an outage. `/readyz` does the dependency checking.
+If liveness probed the database, a brief PostgreSQL slowdown would mark every instance unhealthy, the orchestrator would restart all of them at once, and the cold starts would finish the job. The test closes the connection pool and asserts `/healthz` still answers `200` **in under a second** — fast matters as much as successful, because a probe that waits on a timeout trips on its own deadline. `/readyz` in the same state returns `503` with `postgres: down`, and with Redis down returns `200` with `degraded: ["redis"]`.
 
-Distributed tracing is *not* included in v1. At three processes on one machine, correlation IDs plus structured logs plus histograms are sufficient, and an OpenTelemetry collector is one more component to configure and break. It gets reconsidered in the hardening phase, with measurements.
+The pool is closed rather than pointed at a dead port because it verifies its connection at startup on purpose. The interesting case is the one that happens in production: a process that started fine and then lost its database.
+
+### One pitch, one command
+
+```bash
+make trace CID=01a0a013-9325-78e5-948b-ad60748d5704
+```
+
+returns the stored pitch, both model outputs, the inference service's log lines, and the Kafka message with its headers. The processor does *not* log an info line per pitch, deliberately: that is fine at a game's pace and is tens of thousands of lines a minute under burst replay, which is the log volume that makes logs unusable exactly when they are needed. The durable trace does not depend on it — the database row, the Kafka message and the inference log all carry the same id.
+
+### Drift, demonstrated
+
+The model is trained on 2023–2025. In 2026 the automated strike zone changed what plate coordinates are measured against and made the zone rule-defined rather than measured. **Nothing in the pipeline errors.** What changes is the shape of the traffic.
+
+Replaying 322 pitches of 2026 data through the 2025-trained model:
+
+| Class | 2025 share | 2026 share | Shift |
+|---|---:|---:|---:|
+| `BALL` | 48.1% | 51.6% | **+3.5pp** |
+| `FOUL` | 17.8% | 14.0% | **−3.8pp** |
+| `SWINGING_STRIKE` | 2.7% | 3.7% | +1.0pp |
+| `IN_PLAY` | 16.2% | 14.9% | −1.3pp |
+| `CALLED_STRIKE` | 15.3% | 15.8% | +0.6pp |
+
+The direction is what the rule change predicts — coordinates referenced differently means more pitches read as outside the zone, so more balls. The sample is small, so the honest claim is that the panel *shows* the shift, not that it proves it.
+
+The per-feature null ratio did **not** move, and that is correct: 2026 is a distribution change, not a missingness change. The two indicators answer different questions — one catches the inputs meaning something new, the other catches a column being renamed or dropped — and both are needed.
+
+Distributed tracing is still *not* included. At three processes on one machine, correlation IDs plus structured logs plus histograms are sufficient, and an OpenTelemetry collector is one more component to configure and break. It gets reconsidered in the hardening phase, with measurements.
 
 ---
 
@@ -661,7 +723,7 @@ Distributed tracing is *not* included in v1. At three processes on one machine, 
 | Database | PostgreSQL 16 | Strong constraints, JSONB, partial indexes, `sqlc` for compile-time-safe SQL |
 | Cache | Redis 7 | Ephemeral live state and expensive-aggregation caching — never the system of record |
 | Frontend | React 18 · Vite · TypeScript | Fast dev loop; TanStack Query for server state, `useReducer` for the stream |
-| Observability | Prometheus · Grafana · `log/slog` | Self-hosted, standard, one `compose up` |
+| Observability | Prometheus · Grafana · `log/slog` · `prometheus-client` | Self-hosted, standard, one `compose up`; dashboards provisioned from the repository |
 | Orchestration | Docker Compose | Kubernetes is operational overhead at this size |
 
 **Deliberately not used:** Kubernetes, gRPC (one synchronous service-to-service hop; HTTP/JSON is easier to debug), an ORM (analytics-heavy workload needs SQL control and no hidden N+1), a schema registry (topic-name versioning plus contract tests, reconsidered when measured), TimescaleDB (native range partitioning suffices).
@@ -698,8 +760,8 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 7 | WebSocket | ✅ Complete |
 | 8 | Redis | ✅ Complete |
 | 9 | React dashboard | ✅ Complete |
-| 10 | Observability | 🔨 In progress |
-| 11 | Hardening · chaos, load, security | |
+| 10 | Observability | ✅ Complete |
+| 11 | Hardening · chaos, load, security | 🔨 In progress |
 | 12 | Demo & documentation | |
 
 Each phase produces something demonstrable on its own — no phase leaves an intermediate artifact that "only makes sense next time."
@@ -803,6 +865,21 @@ make web-test      # 35 component, hook and page tests
 make web-build     # type-check and build the bundle
 ```
 
+Bring up metrics and dashboards:
+
+```bash
+make observability     # Prometheus on :9090, Grafana on :3000 (no login)
+make check-dashboards  # all 41 panel queries against the live Prometheus
+```
+
+Grafana comes up with five dashboards already provisioned — system health, the
+event pipeline, model serving, the live channel and the cache. Follow one pitch
+through every service:
+
+```bash
+make trace CID=<correlation-id>
+```
+
 Prove the cache is not load-bearing:
 
 ```bash
@@ -842,7 +919,7 @@ The project is finished when all of the following are true:
 - [x] Publishing the same event twice does not create a second database row
 - [x] A poison message lands in the DLQ without stalling the consumer
 - [x] Stopping Redis degrades performance without failing a single request
-- [ ] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
+- [x] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
 - [x] One `correlation_id` traces a single pitch end-to-end across every service log
 
 ---

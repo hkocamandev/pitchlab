@@ -1,0 +1,303 @@
+{
+  "uid": "pitchlab-live",
+  "title": "PitchLab \u00b7 Live Channel",
+  "description": "The real-time surface: who is connected, what they are receiving, and whether anyone is falling behind.",
+  "tags": [
+    "pitchlab",
+    "operations",
+    "websocket"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active connections",
+      "description": "Read from the hub at scrape time, not counted on connect and disconnect, so it cannot drift from reality.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "websocket_connections_active",
+          "legendFormat": "connections",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Slow consumers",
+      "description": "Connections whose send queue is above 80%. A non-zero value here precedes dropped messages.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "websocket_slow_consumers",
+          "legendFormat": "near capacity",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Dropped messages",
+      "description": "BACKPRESSURE INDICATOR. A client that cannot keep up loses its own messages, and the sequence number makes the loss visible to it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum(increase(websocket_messages_dropped_total[5m]))",
+          "legendFormat": "dropped",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Messages sent per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (message_type) (rate(websocket_messages_sent_total[1m]))",
+          "legendFormat": "{{message_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Drop rate by type",
+      "description": "Anomalies are never dropped -- an undeliverable one closes the connection instead -- so anything but pitch.analyzed or session.metrics here is a bug.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "sum by (reason) (rate(websocket_messages_dropped_total[1m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Live fan-out lag",
+      "description": "The API's own consumer. Lag here means the dashboard is behind the database, not that the pipeline is stuck.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pitchlab-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pitchlab-prometheus"
+          },
+          "expr": "kafka_consumer_lag{topic=~\".*analyzed.*|.*anomaly.*\"}",
+          "legendFormat": "{{topic}} p{{partition}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    }
+  ],
+  "editable": true
+}

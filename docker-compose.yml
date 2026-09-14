@@ -142,6 +142,52 @@ services:
       - "${PITCHLAB_WEB_PORT:-5174}:80"
     profiles: ["web"]
 
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: pitchlab-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Short retention on purpose: this is a development stack, and a
+      # fortnight of samples is more than any demo needs.
+      - --storage.tsdb.retention.time=14d
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    extra_hosts:
+      # The services usually run on the host during development while
+      # Prometheus runs here. Without this the scrape config cannot reach them
+      # on Linux, where host.docker.internal is not resolved by default.
+      - "host.docker.internal:host-gateway"
+    profiles: ["observability"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: pitchlab-grafana
+    depends_on:
+      - prometheus
+    environment:
+      # No login for a local stack. Authentication is out of scope for v1, and
+      # a password nobody can look up is worse than none at all.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      # Data source and dashboards are provisioned from the repository, so a
+      # fresh checkout comes up with all five dashboards already there.
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    profiles: ["observability"]
+
 volumes:
   postgres-data:
+  prometheus-data:
+  grafana-data:
   kafka-data:

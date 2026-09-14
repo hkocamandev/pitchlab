@@ -19,9 +19,12 @@ const BroadcastBuffer = 1024
 
 // HubMetrics receives counters. Nil callbacks are ignored, so instrumentation
 // is optional and the hub stays testable without it.
+// Deliberately no session identifier in any of these. A metrics hook that
+// hands the caller an unbounded identifier is an invitation to use it as a
+// label, and one label per session is one time series per outing. The session
+// belongs in the logs, which already carry it.
 type HubMetrics struct {
-	OnConnect      func(sessionID uuid.UUID)
-	OnDisconnect   func(sessionID uuid.UUID, dropped uint64)
+	OnSent         func(messageType string)
 	OnDropped      func(messageType string)
 	OnSlowConsumer func(delta int)
 }
@@ -35,6 +38,12 @@ func (m HubMetrics) slowConsumer(delta int) {
 func (m HubMetrics) dropped(messageType string) {
 	if m.OnDropped != nil {
 		m.OnDropped(messageType)
+	}
+}
+
+func (m HubMetrics) sent(messageType string) {
+	if m.OnSent != nil {
+		m.OnSent(messageType)
 	}
 }
 
@@ -105,9 +114,6 @@ func (h *Hub) Run(ctx context.Context) {
 			}
 			clients[c] = struct{}{}
 			h.clients.Add(1)
-			if h.metrics.OnConnect != nil {
-				h.metrics.OnConnect(c.sessionID)
-			}
 			h.log.Debug("client registered",
 				"session_id", c.sessionID, "session_clients", len(clients))
 
@@ -150,9 +156,6 @@ func (h *Hub) remove(c *Client) {
 	close(c.send)
 	h.clients.Add(-1)
 
-	if h.metrics.OnDisconnect != nil {
-		h.metrics.OnDisconnect(c.sessionID, c.Dropped())
-	}
 	h.log.Debug("client unregistered",
 		"session_id", c.sessionID, "dropped", c.Dropped())
 }

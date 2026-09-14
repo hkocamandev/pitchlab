@@ -22,7 +22,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -36,6 +38,7 @@ import (
 	"github.com/hkocamandev/pitchlab/internal/events"
 	pkafka "github.com/hkocamandev/pitchlab/internal/kafka"
 	"github.com/hkocamandev/pitchlab/internal/mlclient"
+	"github.com/hkocamandev/pitchlab/internal/observability"
 	"github.com/hkocamandev/pitchlab/internal/processor"
 )
 
@@ -75,14 +78,27 @@ func run() error {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.NewPool(ctx, db.DefaultPoolConfig(dsn))
+	metrics := observability.New()
+
+	// The scrape endpoint is the processor's only HTTP surface: it has no
+	// product API, but it is the service whose health matters most, because
+	// consumer lag is where "the system cannot keep up" first becomes visible.
+	stopMetrics := startMetricsServer(
+		env("PITCHLAB_PROCESSOR_METRICS_ADDR", ":9091"), metrics, log)
+	defer stopMetrics()
+
+	poolCfg := db.DefaultPoolConfig(dsn)
+	poolCfg.Tracer = observability.NewQueryTracer(metrics)
+
+	pool, err := db.NewPool(ctx, poolCfg)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	store := db.NewStore(pool)
 
-	producer := pkafka.NewProducer(pkafka.DefaultProducerConfig(brokers), log)
+	producer := pkafka.NewProducer(pkafka.DefaultProducerConfig(brokers), log).
+		WithMetrics(metrics.ProducerHooks())
 	defer func() {
 		if err := producer.Close(); err != nil {
 			log.Warn("close producer", "error", err)
@@ -90,6 +106,7 @@ func run() error {
 	}()
 
 	ml := mlclient.New(mlclient.DefaultConfig(mlURL), log)
+	metrics.TrackBreaker(func() string { return ml.BreakerState().String() })
 
 	// A warning, not a failure. The pipeline is designed to keep running with
 	// inference down -- pitches are stored with their prediction marked failed
@@ -116,9 +133,17 @@ func run() error {
 			log.Warn("close cache", "error", err)
 		}
 	}()
+	redis = redis.WithMetrics(cache.Metrics{OnOperation: metrics.CacheHook()})
 
+	onDuplicate, onPersisted, onPrediction := metrics.PipelineHooks()
 	pipeline := processor.NewPipeline(store, ml, producer, log, version).
-		WithCache(redis)
+		WithCache(redis).
+		WithMetrics(processor.PipelineMetrics{
+			OnDuplicate:        onDuplicate,
+			OnPersisted:        onPersisted,
+			OnPrediction:       onPrediction,
+			OnPredictionStored: metrics.PredictionStoredHook(),
+		})
 
 	anomalyCfg := processor.DefaultAnomalyConfig()
 	if v := os.Getenv("PITCHLAB_ANOMALY_IDLE_TIMEOUT"); v != "" {
@@ -127,15 +152,31 @@ func run() error {
 		}
 	}
 	evaluator := processor.NewAnomalyEvaluator(store, producer, anomalyCfg, log, version).
-		WithCache(redis)
+		WithCache(redis).
+		OnFinding(metrics.AnomalyHook())
+
+	onProcessed, onDLQ := metrics.ConsumerHooks()
+	consumerMetrics := pkafka.ConsumerMetrics{OnProcessed: onProcessed, OnDLQ: onDLQ}
+
+	// Lag is sampled from the broker rather than observed while consuming,
+	// because a reader in a consumer group cannot report its own lag.
+	for topic, group := range map[string]string{
+		events.TopicPitchRaw:      "pitch-processor",
+		events.TopicPitchAnalyzed: "anomaly-evaluator",
+	} {
+		sampler := pkafka.NewLagSampler(brokers, topic, group, log, metrics.LagHook())
+		go sampler.Run(ctx)
+	}
 
 	rawConsumer := pkafka.NewConsumer(withConcurrency(
 		pkafka.DefaultConsumerConfig(brokers, events.TopicPitchRaw, "pitch-processor"),
-		concurrency, events.TopicPitchRawDLQ, false), producer, log)
+		concurrency, events.TopicPitchRawDLQ, false), producer, log).
+		WithMetrics(consumerMetrics)
 
 	analyzedConsumer := pkafka.NewConsumer(withConcurrency(
 		pkafka.DefaultConsumerConfig(brokers, events.TopicPitchAnalyzed, "anomaly-evaluator"),
-		1, events.TopicPitchAnalyzedDLQ, false), producer, log)
+		1, events.TopicPitchAnalyzedDLQ, false), producer, log).
+		WithMetrics(consumerMetrics)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 3)
@@ -194,6 +235,48 @@ func withConcurrency(
 	cfg.DLQTopic = dlq
 	cfg.StartFromLatest = fromLatest
 	return cfg
+}
+
+// startMetricsServer exposes /metrics, /healthz and /readyz for the processor.
+//
+// A separate listener from anything product-facing, on its own port, because
+// these endpoints are infrastructure: they should be reachable when the
+// service is degraded, and they should not be exposed alongside an API.
+//
+// /healthz checks nothing here either. If it probed Kafka, a broker blip would
+// mark every processor instance unhealthy and the orchestrator would restart
+// all of them at once -- turning a recoverable pause into a cold-start storm.
+func startMetricsServer(
+	addr string, metrics *observability.Metrics, log *slog.Logger,
+) func() {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.Handler())
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		log.Info("metrics listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// A failure here must not stop the processor. Losing metrics is
+			// bad; losing the pipeline because metrics could not bind a port
+			// would be worse.
+			log.Error("metrics server stopped", "error", err)
+		}
+	}()
+
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}
 }
 
 func env(key, fallback string) string {

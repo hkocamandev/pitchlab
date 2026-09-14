@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/hkocamandev/pitchlab/internal/cache"
@@ -11,6 +12,7 @@ import (
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/httpx"
 	"github.com/hkocamandev/pitchlab/internal/mlclient"
+	"github.com/hkocamandev/pitchlab/internal/observability"
 )
 
 // Server holds the handler dependencies.
@@ -32,6 +34,9 @@ type Server struct {
 	// are computed by the stream processor and read from the database; this
 	// API never scores a pitch on the request path.
 	ml *mlclient.Client
+	// metrics is optional. With none attached the routes are registered
+	// unwrapped and /metrics is absent, which is what the handler tests use.
+	metrics *observability.Metrics
 }
 
 // RedisChecker is the slice of Redis the API needs for readiness. Keeping it
@@ -76,6 +81,35 @@ func (s *Server) WithCache(c *cache.Cache) *Server {
 	return s
 }
 
+// WithMetrics attaches the Prometheus registry and exposes /metrics.
+func (s *Server) WithMetrics(m *observability.Metrics) *Server {
+	s.metrics = m
+	return s
+}
+
+// route registers one endpoint, wrapped in its own instrumentation.
+//
+// The pattern is passed rather than read from the request, because the metric
+// label has to be the pattern and not the path: "/api/v1/athletes/{athleteId}"
+// is one time series, while the paths it matches are one per athlete. A single
+// middleware around the mux cannot know which pattern matched, so the wrapping
+// happens where the pattern is written down.
+func (s *Server) route(mux *http.ServeMux, pattern string, h http.Handler) {
+	if s.metrics != nil {
+		h = s.metrics.InstrumentRoute(routeLabel(pattern), h)
+	}
+	mux.Handle(pattern, h)
+}
+
+// routeLabel drops the method from a pattern, which carries it as its own
+// label already.
+func routeLabel(pattern string) string {
+	if i := strings.IndexByte(pattern, ' '); i >= 0 {
+		return pattern[i+1:]
+	}
+	return pattern
+}
+
 // Routes builds the HTTP handler.
 //
 // net/http's own mux handles method-and-pattern routing since Go 1.22, so a
@@ -85,39 +119,46 @@ func (s *Server) Routes() http.Handler {
 
 	// Operational endpoints sit outside /api/v1: they are infrastructure, not
 	// product surface, and must not move when the API is versioned.
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	s.route(mux, "GET /healthz", http.HandlerFunc(s.handleHealthz))
+	s.route(mux, "GET /readyz", http.HandlerFunc(s.handleReadyz))
+
+	// The scrape endpoint is registered only when metrics are attached, so a
+	// server built without them does not advertise an endpoint that would
+	// answer with nothing.
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics.Handler())
+	}
 
 	// athletes
-	mux.Handle("GET /api/v1/athletes", s.handler(s.listAthletes))
-	mux.Handle("GET /api/v1/athletes/{athleteId}", s.handler(s.getAthlete))
-	mux.Handle("GET /api/v1/athletes/{athleteId}/analytics", s.handler(s.getAthleteAnalytics))
-	mux.Handle("GET /api/v1/athletes/{athleteId}/sessions", s.handler(s.listAthleteSessions))
-	mux.Handle("GET /api/v1/athletes/{athleteId}/anomalies", s.handler(s.listAthleteAnomalies))
+	s.route(mux, "GET /api/v1/athletes", s.handler(s.listAthletes))
+	s.route(mux, "GET /api/v1/athletes/{athleteId}", s.handler(s.getAthlete))
+	s.route(mux, "GET /api/v1/athletes/{athleteId}/analytics", s.handler(s.getAthleteAnalytics))
+	s.route(mux, "GET /api/v1/athletes/{athleteId}/sessions", s.handler(s.listAthleteSessions))
+	s.route(mux, "GET /api/v1/athletes/{athleteId}/anomalies", s.handler(s.listAthleteAnomalies))
 
 	// sessions
-	mux.Handle("GET /api/v1/sessions", s.handler(s.listSessions))
-	mux.Handle("GET /api/v1/sessions/{sessionId}", s.handler(s.getSession))
-	mux.Handle("GET /api/v1/sessions/{sessionId}/pitches", s.handler(s.listSessionPitches))
-	mux.Handle("POST /api/v1/sessions/{sessionId}/close", s.handler(s.closeSession))
+	s.route(mux, "GET /api/v1/sessions", s.handler(s.listSessions))
+	s.route(mux, "GET /api/v1/sessions/{sessionId}", s.handler(s.getSession))
+	s.route(mux, "GET /api/v1/sessions/{sessionId}/pitches", s.handler(s.listSessionPitches))
+	s.route(mux, "POST /api/v1/sessions/{sessionId}/close", s.handler(s.closeSession))
 
 	// pitches and predictions
-	mux.Handle("GET /api/v1/pitches/{pitchId}/explanation", s.handler(s.getPitchExplanation))
-	mux.Handle("GET /api/v1/pitches", s.handler(s.listPitches))
-	mux.Handle("GET /api/v1/pitches/{pitchId}", s.handler(s.getPitch))
-	mux.Handle("GET /api/v1/pitches/{pitchId}/predictions", s.handler(s.listPitchPredictions))
+	s.route(mux, "GET /api/v1/pitches/{pitchId}/explanation", s.handler(s.getPitchExplanation))
+	s.route(mux, "GET /api/v1/pitches", s.handler(s.listPitches))
+	s.route(mux, "GET /api/v1/pitches/{pitchId}", s.handler(s.getPitch))
+	s.route(mux, "GET /api/v1/pitches/{pitchId}/predictions", s.handler(s.listPitchPredictions))
 
 	// models
-	mux.Handle("GET /api/v1/models", s.handler(s.listModels))
+	s.route(mux, "GET /api/v1/models", s.handler(s.listModels))
 
 	// anomalies
-	mux.Handle("POST /api/v1/anomalies/{anomalyId}/acknowledge", s.handler(s.acknowledgeAnomaly))
+	s.route(mux, "POST /api/v1/anomalies/{anomalyId}/acknowledge", s.handler(s.acknowledgeAnomaly))
 
 	// The real-time channel sits outside /api/v1. It is a different protocol
 	// with a different lifecycle, and versioning it alongside REST resources
 	// would imply they change together.
 	if s.wsHandler != nil {
-		mux.Handle("GET /ws/sessions/{sessionId}", s.wsHandler)
+		s.route(mux, "GET /ws/sessions/{sessionId}", s.wsHandler)
 	}
 
 	// Order matters: RequestID runs first so everything downstream, including

@@ -61,6 +61,10 @@ type PipelineMetrics struct {
 	OnDuplicate  func()
 	OnPersisted  func(d time.Duration)
 	OnPrediction func(variant string, d time.Duration, err error)
+	// OnPredictionStored fires after the row is written, with the model
+	// version that produced it -- a bounded label, unlike anything
+	// identifying the pitch.
+	OnPredictionStored func(variant, modelVersion string)
 }
 
 // NewPipeline builds a pipeline.
@@ -509,6 +513,13 @@ func (p *Pipeline) persistPrediction(
 
 	if _, err := q.UpsertPitchPrediction(ctx, params); err != nil {
 		return fmt.Errorf("upsert prediction (%s): %w", pred.Variant, err)
+	}
+
+	// Counted where it is written, not where it is computed. A prediction
+	// that failed to persist is not a prediction the system produced, and a
+	// counter incremented before the write would disagree with the table.
+	if p.metrics.OnPredictionStored != nil {
+		p.metrics.OnPredictionStored(pred.Variant, model.Version)
 	}
 	return nil
 }
