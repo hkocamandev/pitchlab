@@ -33,6 +33,11 @@ services:
       start_period: 10s
 
   redis:
+    # Persistence is off and eviction is on, deliberately. Nothing here is a
+    # record: every key is recomputable from PostgreSQL, so durability would
+    # buy nothing and an eviction is indistinguishable from a cold cache.
+    # Configuring it this way is also a statement -- a Redis that cannot
+    # survive a restart cannot quietly become the system of record.
     image: redis:7-alpine
     container_name: pitchlab-redis
     command:

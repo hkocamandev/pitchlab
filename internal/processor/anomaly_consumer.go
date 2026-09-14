@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hkocamandev/pitchlab/internal/anomaly"
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/db/dbgen"
 	"github.com/hkocamandev/pitchlab/internal/events"
@@ -32,6 +33,9 @@ type AnomalyEvaluator struct {
 	producer *pkafka.Producer
 	log      *slog.Logger
 	version  string
+
+	// cache may be nil; every method on it tolerates that.
+	cache *cache.Cache
 
 	// IdleTimeout is how long a session must be silent before it is
 	// considered over. Replay at 30x compresses twenty seconds between
@@ -72,6 +76,12 @@ func DefaultAnomalyConfig() AnomalyConfig {
 		PollInterval: 5 * time.Second,
 		Detector:     anomaly.DefaultConfig(),
 	}
+}
+
+// WithCache attaches the Redis layer.
+func (a *AnomalyEvaluator) WithCache(c *cache.Cache) *AnomalyEvaluator {
+	a.cache = c
+	return a
 }
 
 // NewAnomalyEvaluator builds an evaluator.
@@ -187,6 +197,12 @@ func (a *AnomalyEvaluator) EvaluateSession(ctx context.Context, sessionID uuid.U
 
 	if _, err := a.store.RecomputeSessionAggregates(ctx, sessionID); err != nil {
 		a.log.Warn("recompute session aggregates", "session_id", sessionID, "error", err)
+	} else {
+		// The outing is over and PostgreSQL now holds the authoritative
+		// aggregates, so the running counters have nothing left to accelerate.
+		// Dropped only after the recompute succeeds: otherwise a failure here
+		// would leave both copies gone.
+		a.cache.DropLiveSession(ctx, sessionID)
 	}
 
 	pitchTypes, err := a.sessionPitchTypes(ctx, sessionID)

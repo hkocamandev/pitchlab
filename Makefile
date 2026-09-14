@@ -11,6 +11,7 @@ DB_PORT ?= 5432
 DATABASE_URL ?= postgres://$(DB_USER):$(DB_PASS)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=disable
 
 KAFKA_BROKERS ?= localhost:9094
+REDIS_URL     ?= redis://localhost:6379/0
 
 MIGRATE_IMAGE := migrate/migrate:v4.18.1
 MIGRATE := docker run --rm --network host \
@@ -122,6 +123,22 @@ watch: ## Follow one session's live channel from the terminal
 seed: ## Register the replay device and the trained model versions
 	go run ./cmd/seed
 
+.PHONY: redis-cli
+redis-cli: ## Open a redis-cli shell
+	docker exec -it pitchlab-redis redis-cli
+
+.PHONY: redis-keys
+redis-keys: ## List the keys this project has written
+	docker exec pitchlab-redis redis-cli --scan --pattern 'pl:*'
+
+.PHONY: redis-down
+redis-down: ## Stop Redis, to show that nothing breaks without it
+	docker compose stop redis
+
+.PHONY: redis-up
+redis-up: ## Start Redis again
+	docker compose start redis
+
 .PHONY: db-reset
 db-reset: migrate-reset seed ## Rebuild the schema from scratch and reseed
 
@@ -140,6 +157,7 @@ test-integration: ## Run tests that need a live database
 	@# delete each other's fixtures, and concurrent TRUNCATEs deadlock.
 	PITCHLAB_TEST_DATABASE_URL="$(DATABASE_URL)" \
 	PITCHLAB_TEST_KAFKA_BROKERS="$(KAFKA_BROKERS)" \
+	PITCHLAB_TEST_REDIS_URL="$(REDIS_URL)" \
 		go test -race -tags=integration -p 1 ./...
 
 .PHONY: vet

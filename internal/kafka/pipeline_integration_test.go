@@ -15,6 +15,7 @@ import (
 
 	kgo "github.com/segmentio/kafka-go"
 
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/events"
 	pkafka "github.com/hkocamandev/pitchlab/internal/kafka"
@@ -301,6 +302,68 @@ func TestRedeliveryDoesNotCreateASecondRow(t *testing.T) {
 	}
 	if measurements != 1 {
 		t.Fatalf("expected 1 measurement, got %d", measurements)
+	}
+}
+
+func TestRedeliveryDoesNotDoubleCountTheLiveCounters(t *testing.T) {
+	// The counters that live in Redis are incremented, not recomputed, so
+	// at-least-once delivery is a genuine hazard for them in a way it is not
+	// for the database: the natural key absorbs a duplicate row, but nothing
+	// absorbs a duplicate HINCRBY.
+	//
+	// The protection is ordering. The duplicate check returns before the cache
+	// is touched, so a redelivered pitch never reaches the increment. Without
+	// that, the live view would drift upward from the truth in the database,
+	// and the drift would be invisible until someone compared the two.
+	redisURL := os.Getenv("PITCHLAB_TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("PITCHLAB_TEST_REDIS_URL is not set")
+	}
+
+	bs := brokers(t)
+	store := testStore(t)
+	topic := uniqueTopic(t, "pitchlab.pitch.raw", 3)
+
+	producer := pkafka.NewProducer(pkafka.DefaultProducerConfig(bs), quietLogger())
+	defer producer.Close()
+
+	redis, err := cache.New(cache.DefaultConfig(redisURL), quietLogger())
+	if err != nil {
+		t.Fatalf("cache: %v", err)
+	}
+	defer func() { _ = redis.Close() }()
+	if err := redis.Ping(context.Background()); err != nil {
+		t.Skipf("redis is not reachable: %v", err)
+	}
+
+	ml := mlclient.New(mlclient.DefaultConfig("http://localhost:1"), quietLogger())
+	pipeline := processor.NewPipeline(store, ml, producer, quietLogger(), "test").
+		WithCache(redis)
+
+	raw := rawPitch("747123", 41, 3, "747123:669373")
+	sessionID := processor.SessionID(raw.Session.SessionUID)
+
+	ctx := context.Background()
+	redis.DropLiveSession(ctx, sessionID)
+	t.Cleanup(func() { redis.DropLiveSession(context.Background(), sessionID) })
+
+	for i := 0; i < 3; i++ {
+		if err := producer.Publish(ctx, topic, envelopeFor(t, raw)); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+
+	cfg := pkafka.DefaultConsumerConfig(bs, topic, "test-live-counters")
+	cfg.Concurrency = 1
+	runConsumer(t, cfg, producer, pipeline.HandlePitchRaw, 3, 30*time.Second)
+
+	live, ok := redis.LiveSession(ctx, sessionID)
+	if !ok {
+		t.Fatal("the live counters were not written")
+	}
+	if live.PitchCount != 1 {
+		t.Fatalf("three deliveries produced a live count of %d, want 1",
+			live.PitchCount)
 	}
 }
 

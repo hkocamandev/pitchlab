@@ -76,6 +76,19 @@ type Querier interface {
 	GetPitchMeasurement(ctx context.Context, pitchID uuid.UUID) (PitchMeasurement, error)
 	GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 	GetSessionByExternalUID(ctx context.Context, externalSessionUid string) (Session, error)
+	// Rebuilds an outing's running counters from the rows themselves.
+	//
+	// This is the fallback for the Redis live-state key, and it is also the
+	// argument for that key existing: these numbers change once per pitch, and
+	// updating a session row that often would mean row-lock contention and
+	// constant vacuuming. The cache is only ever an accelerator, and this query
+	// is the proof -- every value it holds is recomputable here.
+	//
+	// Aggregates are wrapped in COALESCE and cast explicitly for the same reason
+	// as in analytics.sql: sqlc infers a bare aggregate as non-nullable and then
+	// panics on the NULL an empty group returns. The paired count columns are how
+	// a caller tells a real zero from an empty one.
+	GetSessionLiveMetrics(ctx context.Context, sessionID uuid.UUID) (GetSessionLiveMetricsRow, error)
 	// The session under evaluation, shaped like one row of the baseline window.
 	GetSessionMetricMedians(ctx context.Context, arg GetSessionMetricMediansParams) (GetSessionMetricMediansRow, error)
 	GetSessionOutcomeDistribution(ctx context.Context, sessionID uuid.UUID) ([]GetSessionOutcomeDistributionRow, error)

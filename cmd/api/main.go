@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hkocamandev/pitchlab/internal/api"
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/events"
@@ -71,6 +72,21 @@ func run() error {
 	defer pool.Close()
 	store := db.NewStore(pool)
 
+	// Redis is optional. A failure to build the client is logged and the
+	// process continues without a cache -- making the API refuse to start over
+	// a cache would make the cache critical, which is the one property this
+	// layer must not have.
+	redis, err := cache.New(cache.DefaultConfig(cfg.RedisURL), log)
+	if err != nil {
+		log.Warn("cache disabled; continuing without it", "error", err)
+		redis = nil
+	}
+	defer func() {
+		if err := redis.Close(); err != nil {
+			log.Warn("close cache", "error", err)
+		}
+	}()
+
 	hub := ws.NewHub(log)
 	var hubDone sync.WaitGroup
 	hubDone.Add(1)
@@ -81,7 +97,10 @@ func run() error {
 
 	fanoutDone := startFanout(ctx, hub, log)
 
-	srv := api.New(cfg, store, log).WithWebSocket(hub).HTTPServer()
+	srv := api.New(cfg, store, log).
+		WithCache(redis).
+		WithWebSocket(hub).
+		HTTPServer()
 
 	serverErr := make(chan error, 1)
 	go func() {

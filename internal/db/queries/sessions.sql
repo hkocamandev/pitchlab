@@ -83,3 +83,34 @@ SELECT actual_outcome, count(*) AS n
 FROM pitches
 WHERE session_id = $1 AND actual_outcome IS NOT NULL
 GROUP BY actual_outcome;
+
+-- name: GetSessionLiveMetrics :one
+-- Rebuilds an outing's running counters from the rows themselves.
+--
+-- This is the fallback for the Redis live-state key, and it is also the
+-- argument for that key existing: these numbers change once per pitch, and
+-- updating a session row that often would mean row-lock contention and
+-- constant vacuuming. The cache is only ever an accelerator, and this query
+-- is the proof -- every value it holds is recomputable here.
+--
+-- Aggregates are wrapped in COALESCE and cast explicitly for the same reason
+-- as in analytics.sql: sqlc infers a bare aggregate as non-nullable and then
+-- panics on the NULL an empty group returns. The paired count columns are how
+-- a caller tells a real zero from an empty one.
+SELECT
+    count(*)::bigint                                                     AS pitch_count,
+    count(*) FILTER (WHERE p.actual_outcome = 'SWINGING_STRIKE')::bigint AS whiff_count,
+    COALESCE(avg(m.release_speed), 0)::float8                            AS avg_release_speed,
+    count(m.release_speed)::bigint                                       AS speed_count,
+    COALESCE(avg(m.release_spin_rate), 0)::float8                        AS avg_release_spin_rate,
+    count(m.release_spin_rate)::bigint                                   AS spin_count,
+    COALESCE(avg(pr.score), 0)::float8                                   AS avg_pitch_score,
+    count(pr.score)::bigint                                              AS score_count
+FROM pitches p
+LEFT JOIN pitch_measurements m ON m.pitch_id = p.id
+LEFT JOIN pitch_predictions pr ON pr.pitch_id = p.id
+     AND pr.model_version_id = (
+         SELECT id FROM model_versions
+         WHERE variant = 'pitching' AND is_active LIMIT 1
+     )
+WHERE p.session_id = $1;

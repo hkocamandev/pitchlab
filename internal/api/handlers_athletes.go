@@ -1,8 +1,15 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"sort"
+	"strings"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/db/dbgen"
 	"github.com/hkocamandev/pitchlab/internal/httpx"
@@ -130,11 +137,78 @@ func (s *Server) getAthleteAnalytics(w http.ResponseWriter, r *http.Request) err
 
 	include := httpx.QueryIncludes(r, "distribution", "trend")
 
-	summary, err := s.store.GetAthleteSummary(r.Context(), dbgen.GetAthleteSummaryParams{
+	// Cache-aside. This endpoint runs up to four aggregates over every pitch an
+	// athlete has ever thrown, and the page is opened far more often than the
+	// numbers change -- which is the only kind of work worth caching.
+	//
+	// The generation is read once and reused for the store. Reading it again
+	// before writing would let an invalidation that lands in between file the
+	// fresh payload under the stale generation, where nothing would look for it.
+	generation := s.cache.Generation(r.Context(), id)
+	variant := analyticsVariant(from, to, include)
+
+	var out AnalyticsDTO
+	if s.cache.GetAnalytics(r.Context(), id, generation, variant, &out) {
+		writeAnalytics(w, r, out, "HIT")
+		return nil
+	}
+
+	out, err = s.computeAthleteAnalytics(r.Context(), id, from, to, include)
+	if err != nil {
+		return err
+	}
+	s.cache.SetAnalytics(r.Context(), id, generation, variant, out)
+
+	writeAnalytics(w, r, out, "MISS")
+	return nil
+}
+
+// analyticsVariant identifies which shape of the rollup a request asked for.
+//
+// The window and the requested sections change the payload, so one athlete has
+// several valid cached entries at once. Leaving them out of the key would
+// serve a year's numbers to someone who asked for a week.
+func analyticsVariant(from, to *time.Time, include map[string]bool) string {
+	parts := []string{"from=" + formatTimeParam(from), "to=" + formatTimeParam(to)}
+	// Sorted, so two requests that differ only in the order of include values
+	// share one entry instead of computing the same thing twice.
+	keys := make([]string, 0, len(include))
+	for k, v := range include {
+		if v {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	parts = append(parts, "include="+strings.Join(keys, ","))
+	return cache.Variant(parts...)
+}
+
+func formatTimeParam(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func writeAnalytics(w http.ResponseWriter, r *http.Request, out AnalyticsDTO, state string) {
+	// Reported so a cache problem is visible from the outside rather than only
+	// in a metric nobody is looking at.
+	w.Header().Set(httpx.HeaderCacheState, state)
+	// Analytics is expensive and tolerates being a minute stale, which is also
+	// what makes it the right thing to cache.
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	httpx.WriteJSON(w, r, http.StatusOK, out)
+}
+
+// computeAthleteAnalytics builds the rollup from PostgreSQL.
+func (s *Server) computeAthleteAnalytics(
+	ctx context.Context, id uuid.UUID, from, to *time.Time, include map[string]bool,
+) (AnalyticsDTO, error) {
+	summary, err := s.store.GetAthleteSummary(ctx, dbgen.GetAthleteSummaryParams{
 		PitcherAthleteID: id, FromTs: from, ToTs: to,
 	})
 	if err != nil {
-		return httpx.ErrInternal(err)
+		return AnalyticsDTO{}, httpx.ErrInternal(err)
 	}
 
 	n := summary.PitchCount
@@ -157,12 +231,12 @@ func (s *Server) getAthleteAnalytics(w http.ResponseWriter, r *http.Request) err
 	}
 
 	if include["distribution"] {
-		dist, err := s.store.GetAthletePitchTypeDistribution(r.Context(),
+		dist, err := s.store.GetAthletePitchTypeDistribution(ctx,
 			dbgen.GetAthletePitchTypeDistributionParams{
 				PitcherAthleteID: id, FromTs: from, ToTs: to,
 			})
 		if err != nil {
-			return httpx.ErrInternal(err)
+			return AnalyticsDTO{}, httpx.ErrInternal(err)
 		}
 		var total int64
 		for _, d := range dist {
@@ -190,10 +264,10 @@ func (s *Server) getAthleteAnalytics(w http.ResponseWriter, r *http.Request) err
 	}
 
 	if include["trend"] {
-		trend, err := s.store.GetAthleteSessionTrend(r.Context(),
+		trend, err := s.store.GetAthleteSessionTrend(ctx,
 			dbgen.GetAthleteSessionTrendParams{PitcherAthleteID: id, Limit: 60})
 		if err != nil {
-			return httpx.ErrInternal(err)
+			return AnalyticsDTO{}, httpx.ErrInternal(err)
 		}
 		for _, t := range trend {
 			out.Trend = append(out.Trend, TrendPointDTO{
@@ -206,17 +280,13 @@ func (s *Server) getAthleteAnalytics(w http.ResponseWriter, r *http.Request) err
 		}
 	}
 
-	open, err := s.store.CountOpenAnomalies(r.Context(), id)
+	open, err := s.store.CountOpenAnomalies(ctx, id)
 	if err != nil {
-		return httpx.ErrInternal(err)
+		return AnalyticsDTO{}, httpx.ErrInternal(err)
 	}
 	out.OpenAnomalyCount = open
 
-	// Analytics is expensive and tolerates being a minute stale, which is
-	// also what makes it the right thing to cache in Redis later.
-	w.Header().Set("Cache-Control", "private, max-age=60")
-	httpx.WriteJSON(w, r, http.StatusOK, out)
-	return nil
+	return out, nil
 }
 
 func (s *Server) listAthleteSessions(w http.ResponseWriter, r *http.Request) error {

@@ -32,6 +32,11 @@ const (
 const (
 	HeaderRequestID     = "X-Request-ID"
 	HeaderCorrelationID = "X-Correlation-ID"
+
+	// HeaderCacheState reports whether a response came from the cache. It
+	// makes a cache problem visible from outside the process, rather than only
+	// in a metric nobody happens to be looking at.
+	HeaderCacheState = "X-Cache"
 )
 
 // RequestID assigns an identifier to every request and echoes it back.
@@ -217,7 +222,9 @@ func CORS(allowed func(string) bool) func(http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Add("Vary", "Origin")
 				w.Header().Set("Access-Control-Expose-Headers",
-					strings.Join([]string{HeaderRequestID, HeaderCorrelationID, "ETag"}, ", "))
+					strings.Join([]string{
+						HeaderRequestID, HeaderCorrelationID, HeaderCacheState, "ETag",
+					}, ", "))
 			}
 
 			if r.Method == http.MethodOptions {
