@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -182,7 +183,7 @@ func (s *Server) listSessionPitches(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	pitches, hasMore := httpx.Paginate(pitches, limit)
-	items, err := s.buildPitchDTOs(r, pitches, meas, include)
+	items, err := s.buildPitchDTOs(r.Context(), pitches, meas, include)
 	if err != nil {
 		return err
 	}
@@ -267,7 +268,7 @@ func (s *Server) listPitches(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	pitches, hasMore := httpx.Paginate(pitches, limit)
-	items, err := s.buildPitchDTOs(r, pitches, meas,
+	items, err := s.buildPitchDTOs(r.Context(), pitches, meas,
 		httpx.QueryIncludes(r, "measurement", "prediction"))
 	if err != nil {
 		return err
@@ -424,7 +425,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) error {
 // buildPitchDTOs assembles pitch responses, optionally attaching the active
 // models' predictions.
 func (s *Server) buildPitchDTOs(
-	r *http.Request,
+	ctx context.Context,
 	pitches []dbgen.Pitch,
 	meas []dbgen.PitchMeasurement,
 	include map[string]bool,
@@ -440,7 +441,7 @@ func (s *Server) buildPitchDTOs(
 		for _, p := range pitches {
 			ids = append(ids, p.ID)
 		}
-		rows, err := s.store.GetActivePredictionsForPitches(r.Context(), ids)
+		rows, err := s.store.GetActivePredictionsForPitches(ctx, ids)
 		if err != nil {
 			return nil, httpx.ErrInternal(err)
 		}

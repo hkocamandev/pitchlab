@@ -19,6 +19,9 @@ type Server struct {
 	// redis is optional by design. Its absence degrades performance, never
 	// correctness, so it is allowed to be nil.
 	redis RedisChecker
+	// wsHandler is optional too: with no hub attached the REST surface still
+	// serves, and the route simply does not exist.
+	wsHandler http.Handler
 }
 
 // RedisChecker is the slice of Redis the API needs for readiness. Keeping it
@@ -75,9 +78,19 @@ func (s *Server) Routes() http.Handler {
 	// anomalies
 	mux.Handle("POST /api/v1/anomalies/{anomalyId}/acknowledge", s.handler(s.acknowledgeAnomaly))
 
+	// The real-time channel sits outside /api/v1. It is a different protocol
+	// with a different lifecycle, and versioning it alongside REST resources
+	// would imply they change together.
+	if s.wsHandler != nil {
+		mux.Handle("GET /ws/sessions/{sessionId}", s.wsHandler)
+	}
+
 	// Order matters: RequestID runs first so everything downstream, including
 	// the panic handler, can label its output with the request id.
 	var h http.Handler = mux
+	// Timeout only bounds the handler's own execution -- for a WebSocket that
+	// is the handshake, since the pumps outlive the request and hold the
+	// hijacked connection, not the request context.
 	h = httpx.Timeout(s.cfg.ReadTimeout)(h)
 	h = httpx.Recovery(h)
 	h = httpx.CORS(s.cfg.AllowsOrigin)(h)

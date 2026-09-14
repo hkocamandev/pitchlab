@@ -17,12 +17,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/hkocamandev/pitchlab/internal/api"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
+	"github.com/hkocamandev/pitchlab/internal/events"
+	pkafka "github.com/hkocamandev/pitchlab/internal/kafka"
+	"github.com/hkocamandev/pitchlab/internal/ws"
 )
 
 func main() {
@@ -63,7 +71,17 @@ func run() error {
 	defer pool.Close()
 	store := db.NewStore(pool)
 
-	srv := api.New(cfg, store, log).HTTPServer()
+	hub := ws.NewHub(log)
+	var hubDone sync.WaitGroup
+	hubDone.Add(1)
+	go func() {
+		defer hubDone.Done()
+		hub.Run(ctx)
+	}()
+
+	fanoutDone := startFanout(ctx, hub, log)
+
+	srv := api.New(cfg, store, log).WithWebSocket(hub).HTTPServer()
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -88,11 +106,87 @@ func run() error {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("graceful shutdown timed out; forcing close", "error", err)
-		return srv.Close()
+		_ = srv.Close()
 	}
+
+	// The listener is closed, so no new connection can arrive; the hub and the
+	// fan-out are then stopped in that order, which is what lets every live
+	// socket receive a 1001 Going Away instead of a reset.
+	hubDone.Wait()
+	fanoutDone.Wait()
 
 	log.Info("stopped")
 	return nil
+}
+
+// startFanout consumes the analyzed-pitch and anomaly topics and broadcasts
+// them to connected dashboards.
+//
+// It is deliberately lenient about failure. This consumer owns no durable
+// state: everything it broadcasts is already committed to PostgreSQL, so a
+// broker that is unreachable costs live updates and nothing else. Refusing to
+// start the API over it would take the REST surface down for a cache-shaped
+// problem.
+func startFanout(ctx context.Context, hub *ws.Hub, log *slog.Logger) *sync.WaitGroup {
+	var wg sync.WaitGroup
+
+	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9094"), ",")
+	fanout := api.NewFanout(hub, log)
+
+	// A group per instance, not one group shared by every replica.
+	//
+	// A shared group splits the partitions between replicas, so a browser
+	// connected to the replica that was not assigned its session's partition
+	// would sit there receiving nothing -- with no error anywhere, because
+	// from Kafka's point of view the messages were delivered. Each replica
+	// reading the whole topic costs bandwidth and gets the semantics right.
+	// Phase 8 replaces this with a single consumer fanning out over Redis.
+	group := env("PITCHLAB_WS_GROUP_PREFIX", "ws-fanout") + "-" + instanceID()
+
+	for _, topic := range []string{events.TopicPitchAnalyzed, events.TopicAnomaly} {
+		cfg := pkafka.DefaultConsumerConfig(brokers, topic, group)
+		// One reader: broadcast order within a session should match the order
+		// the pitches were processed in.
+		cfg.Concurrency = 1
+		// Start at the latest offset. A dashboard opened now wants what is
+		// happening now, not a replay of every pitch since the topic was
+		// created.
+		cfg.StartFromLatest = true
+		// No dead-letter queue. There is nothing to recover: the durable copy
+		// is in PostgreSQL and a live notification that missed its moment has
+		// no value later.
+		cfg.DLQTopic = ""
+
+		consumer := pkafka.NewConsumer(cfg, nil, log)
+
+		wg.Add(1)
+		go func(topic string) {
+			defer wg.Done()
+			if err := consumer.Run(ctx, fanout.Handle); err != nil {
+				log.Error("websocket fan-out stopped", "topic", topic, "error", err)
+			}
+		}(topic)
+	}
+
+	return &wg
+}
+
+// instanceID identifies this process for consumer-group naming.
+func instanceID() string {
+	if v := os.Getenv("PITCHLAB_INSTANCE_ID"); v != "" {
+		return v
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host + "-" + strconv.Itoa(os.Getpid())
+	}
+	return uuid.NewString()
+}
+
+func env(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
 }
 
 func newLogger(cfg config.API) *slog.Logger {
