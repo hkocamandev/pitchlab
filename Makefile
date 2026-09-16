@@ -117,6 +117,18 @@ processor: ## Run the stream processor
 dlq: ## Show what is sitting in the raw-pitch dead-letter queue
 	go run ./cmd/dlq-replay --dlq pitchlab.pitch.raw.v1.dlq --dry-run --timeout 5s
 
+.PHONY: secrets
+secrets: ## Generate .env with a signing secret, if it does not exist yet
+	@if [ -f .env ]; then \
+		echo ".env already exists; leaving it alone"; \
+	else \
+		printf 'PITCHLAB_JWT_SECRET=%s\nPITCHLAB_ADMIN_USER=admin\nPITCHLAB_ADMIN_PASSWORD=%s\n' \
+			"$$(openssl rand -base64 48 | tr -d '\n')" \
+			"$$(openssl rand -base64 18 | tr -d '\n')" > .env; \
+		chmod 600 .env; \
+		echo "wrote .env with a generated signing secret and admin password"; \
+	fi
+
 .PHONY: demo
 demo: ## The whole system, from nothing, in one command
 	@# Ordered by what has to exist before what: infrastructure, then the
@@ -124,6 +136,7 @@ demo: ## The whole system, from nothing, in one command
 	@# application, and only then the traffic. Running the replay before the
 	@# processor is listening would publish into a topic nobody is reading and
 	@# look like the pipeline was broken.
+	@$(MAKE) --no-print-directory secrets
 	@echo "==> 1/6  infrastructure (postgres, redis, kafka)   ~30s on a cold start"
 	@docker compose up -d postgres redis kafka
 	@$(MAKE) --no-print-directory wait-db
@@ -172,9 +185,22 @@ tape: ## Export a device-shaped replay tape from historical pitches
 replay: ## Replay a tape into Kafka as a live device feed
 	go run ./cmd/replay --tape $(TAPE) --speed $(SPEED)
 
+.PHONY: token
+token: ## Print a session token for the command-line tools
+	@# Signs in with the credentials in .env and prints the token the login
+	@# put in the cookie. The browser never needs this -- it has the cookie --
+	@# but wsclient and loadtest have no cookie jar.
+	@set -a; . ./.env; set +a; \
+	curl -sS -i -X POST http://localhost:$(PITCHLAB_API_PORT)/api/v1/auth/login \
+		-H 'Content-Type: application/json' \
+		-d "{\"username\":\"$$PITCHLAB_ADMIN_USER\",\"password\":\"$$PITCHLAB_ADMIN_PASSWORD\"}" \
+		| awk -F'[=;]' '/[Ss]et-[Cc]ookie: pitchlab_session/ {print $$2}'
+
 .PHONY: watch
 watch: ## Follow one session's live channel from the terminal
-	go run ./cmd/wsclient --session $(SESSION)
+	@# PITCHLAB_TOKEN is read from the environment by the client; `make token`
+	@# prints one.
+	go run ./cmd/wsclient --session $(SESSION) --token "$${PITCHLAB_TOKEN:-$$(cd . && $(MAKE) --no-print-directory token)}"
 
 .PHONY: ts-types
 ts-types: ## Regenerate the dashboard's TypeScript types from the Go DTOs
@@ -236,8 +262,10 @@ trace: ## Follow one pitch through every service: make trace CID=<correlation-id
 	scripts/trace-pitch.sh $(CID) $(LOG_DIR)
 
 .PHONY: seed
-seed: ## Register the replay device and the trained model versions
-	go run ./cmd/seed
+seed: ## Register the replay device, the model versions and the first admin
+	@# .env is sourced here because the admin password lives in it and this
+	@# recipe runs on the host, outside compose's environment.
+	@set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/seed
 
 .PHONY: redis-cli
 redis-cli: ## Open a redis-cli shell

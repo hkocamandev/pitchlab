@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -150,8 +151,31 @@ func float32IfCounted(v float64, n int64) *float32 {
 // what the handler tests rely on, and what a deployment that only needs the
 // REST surface can do.
 func (s *Server) WithWebSocket(hub *ws.Hub) *Server {
-	s.wsHandler = ws.NewHandler(hub, s, s.cfg.AllowsOrigin, s.log)
+	handler := ws.NewHandler(hub, s, s.cfg.AllowsOrigin, s.log)
+	if s.signer != nil {
+		handler = handler.WithAuthenticator(s)
+	}
+	s.wsHandler = handler
 	return s
+}
+
+// Authenticate implements ws.Authenticator.
+//
+// The same verification the REST middleware performs, returning the identity
+// the socket needs. Sharing one implementation is the point: two token checks
+// eventually disagree, and the one that disagrees quietly is the one on the
+// long-lived connection.
+func (s *Server) Authenticate(r *http.Request) (ws.Identity, error) {
+	claims, err := s.verifyRequest(r)
+	if err != nil {
+		return ws.Identity{}, err
+	}
+	return ws.Identity{
+		UserID:    claims.Subject.String(),
+		Username:  claims.Username,
+		Role:      claims.Role,
+		ExpiresAt: claims.Expiry(),
+	}, nil
 }
 
 // --- Kafka fan-out --------------------------------------------------------

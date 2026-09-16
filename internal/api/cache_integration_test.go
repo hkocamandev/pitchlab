@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hkocamandev/pitchlab/internal/api"
+	"github.com/hkocamandev/pitchlab/internal/auth"
 	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
@@ -55,9 +56,15 @@ func newCachedTestServer(
 		LogLevel:        "error",
 		LogFormat:       "json",
 		Version:         "test",
+		JWTSecret:       integrationSecret,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("test config invalid: %v", err)
+	}
+
+	signer, err := auth.NewSigner(integrationSecret)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
 	}
 
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
@@ -68,8 +75,13 @@ func newCachedTestServer(
 	}
 	t.Cleanup(func() { _ = redis.Close() })
 
-	srv := httptest.NewServer(api.New(cfg, store, log).WithCache(redis).Routes())
+	srv := httptest.NewServer(
+		api.New(cfg, store, log).
+			WithCache(redis).
+			WithAuth(signer, auth.NewLimiter(nil)).
+			Routes())
 	t.Cleanup(srv.Close)
+	authenticate(t, srv, signer, api.RoleAdmin)
 
 	return srv, store, redis
 }

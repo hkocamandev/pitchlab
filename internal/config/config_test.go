@@ -17,12 +17,41 @@ func valid() API {
 		LogLevel:        "info",
 		LogFormat:       "json",
 		ReadTimeout:     30 * time.Second,
+		JWTSecret:       "0d8f4a2c7e1b96350ac8e4f1a7b2d95c6e3a8f0b4d7c1e95",
 	}
 }
 
 func TestValidConfigPasses(t *testing.T) {
 	if err := valid().Validate(); err != nil {
 		t.Fatalf("expected valid: %v", err)
+	}
+}
+
+func TestAMissingSigningSecretIsRejected(t *testing.T) {
+	// Fail closed at startup. The alternative -- booting without one and
+	// deciding what to do at the first login -- means the failure surfaces to
+	// a person trying to sign in, long after anyone was watching the logs.
+	cfg := valid()
+	cfg.JWTSecret = ""
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("an empty signing secret must be rejected")
+	}
+	if !strings.Contains(err.Error(), "PITCHLAB_JWT_SECRET") {
+		t.Errorf("the error does not name the variable to set: %v", err)
+	}
+}
+
+func TestAShortSigningSecretIsRejected(t *testing.T) {
+	// A short secret is brute-forceable offline: anybody holding one token has
+	// everything they need to search for the key that signed it, and the key
+	// signs every other token too.
+	cfg := valid()
+	cfg.JWTSecret = "too-short"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a short signing secret must be rejected")
 	}
 }
 

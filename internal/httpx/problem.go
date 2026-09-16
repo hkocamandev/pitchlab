@@ -77,6 +77,26 @@ func ErrConflict(detail string) *APIError {
 	}
 }
 
+// ErrUnauthorized is for a request with no usable credentials.
+//
+// 401, not 403: the distinction is whether authenticating differently would
+// help. A client with no token gets 401 and knows to log in; a client with a
+// valid token for the wrong role gets 403 and knows not to bother.
+func ErrUnauthorized(detail string) *APIError {
+	return &APIError{
+		Status: http.StatusUnauthorized, Slug: "unauthorized",
+		Title: "Authentication required", Detail: detail,
+	}
+}
+
+// ErrTooManyRequests is for a throttled caller.
+func ErrTooManyRequests(detail string) *APIError {
+	return &APIError{
+		Status: http.StatusTooManyRequests, Slug: "too-many-requests",
+		Title: "Too many requests", Detail: detail,
+	}
+}
+
 // ErrForbidden is for a request that is well-formed and understood but not
 // allowed. The WebSocket handshake uses it for a rejected Origin: the browser
 // asked correctly, from a site that may not connect.

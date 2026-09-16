@@ -26,6 +26,9 @@ RUN npx tsc -b && npm run build
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Not under conf.d/: everything there is included at http level, and this
+# file is meant to be included per location.
+COPY security-headers.conf /etc/nginx/security-headers.conf
 
 COPY --from=build /app/dist /usr/share/nginx/html
 

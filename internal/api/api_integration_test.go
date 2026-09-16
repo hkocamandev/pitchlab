@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hkocamandev/pitchlab/internal/api"
+	"github.com/hkocamandev/pitchlab/internal/auth"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/db/dbgen"
@@ -53,16 +56,63 @@ func newTestServer(t *testing.T) (*httptest.Server, *db.Store) {
 		LogLevel:        "error",
 		LogFormat:       "json",
 		Version:         "test",
+		JWTSecret:       integrationSecret,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("test config invalid: %v", err)
 	}
 
+	signer, err := auth.NewSigner(integrationSecret)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	srv := httptest.NewServer(api.New(cfg, store, log).Routes())
+	srv := httptest.NewServer(
+		api.New(cfg, store, log).
+			WithAuth(signer, auth.NewLimiter(nil)).
+			Routes(),
+	)
 	t.Cleanup(srv.Close)
 
+	// Every request this harness makes carries an administrator's session.
+	//
+	// The endpoints are behind authentication now, and a test that asserted a
+	// 401 for each of them would be testing the middleware -- which has its
+	// own tests -- instead of the handler it was written for. The token goes
+	// in a jar rather than a header so it travels exactly as a browser's
+	// would, including on the WebSocket handshake.
+	authenticate(t, srv, signer, api.RoleAdmin)
+
 	return srv, store
+}
+
+// integrationSecret is a signing key for tests only. It avoids the words
+// NewSigner rejects as placeholders, which is a guard worth keeping.
+const integrationSecret = "5e2a9c74f01b8d63ae5c17f4b28d06e93a7c5f1b4d8e2069"
+
+func authenticate(
+	t *testing.T, srv *httptest.Server, signer *auth.Signer, role string,
+) {
+	t.Helper()
+
+	token, _, err := signer.Issue(db.NewID(), "integration", role)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookie jar: %v", err)
+	}
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	jar.SetCookies(base, []*http.Cookie{{
+		Name: api.SessionCookie, Value: token, Path: "/",
+	}})
+	srv.Client().Jar = jar
 }
 
 func truncate(t *testing.T, store *db.Store) {

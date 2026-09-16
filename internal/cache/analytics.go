@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -108,5 +109,48 @@ func (c *Cache) SetAnalytics(
 	c.call(ctx, "analytics_write", ResultOK, func(ctx context.Context) error {
 		return c.rdb.Set(ctx,
 			analyticsKey(athleteID, generation, variant), raw, SummaryTTL).Err()
+	})
+}
+
+// --- login throttling -----------------------------------------------------
+
+// Increment counts one login attempt within a window.
+//
+// The boolean is the point: it reports whether Redis answered at all, so the
+// caller can fall back to an in-process counter instead of treating an
+// unreachable cache as a fresh window -- which would let anyone disable the
+// throttle by disturbing Redis.
+func (c *Cache) Increment(
+	ctx context.Context, key string, window time.Duration,
+) (int64, bool) {
+	if !c.enabled() {
+		return 0, false
+	}
+
+	var count int64
+	ok := c.call(ctx, "ratelimit_incr", ResultOK, func(ctx context.Context) error {
+		// INCR then EXPIRE in one round trip. The expiry is set every time
+		// rather than only on creation: it makes the window sliding from the
+		// last attempt, which is the behaviour someone hammering the endpoint
+		// should get.
+		pipe := c.rdb.Pipeline()
+		incr := pipe.Incr(ctx, rateLimitKey(key))
+		pipe.Expire(ctx, rateLimitKey(key), window)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
+		count = incr.Val()
+		return nil
+	})
+	return count, ok
+}
+
+// Forget clears a login counter after a successful authentication.
+func (c *Cache) Forget(ctx context.Context, key string) {
+	if !c.enabled() {
+		return
+	}
+	c.call(ctx, "ratelimit_forget", ResultOK, func(ctx context.Context) error {
+		return c.rdb.Del(ctx, rateLimitKey(key)).Err()
 	})
 }

@@ -77,10 +77,13 @@ func newHarness(t *testing.T, timeouts Timeouts) *harness {
 	}}
 
 	mux := http.NewServeMux()
+	// The per-address cap is raised for tests: they open many sockets from one
+	// loopback address, which is precisely the shape the cap refuses. Its own
+	// behaviour is tested separately.
 	mux.Handle("GET /ws/sessions/{sessionId}",
 		NewHandler(hub, lookup, func(o string) bool {
 			return o == "" || o == allowedOrigin
-		}, log))
+		}, log).WithConnectionLimit(1000))
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {

@@ -1,6 +1,7 @@
 // Command seed registers the baseline rows the pipeline expects to exist:
-// the replay simulator as a measurement device, and the trained model
-// versions whose cards live under models/.
+// the replay simulator as a measurement device, the trained model versions
+// whose cards live under models/, and the first user account -- without which
+// a freshly provisioned database has no way in.
 //
 // It is idempotent, so running it against an already-seeded database is a
 // no-op rather than an error.
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hkocamandev/pitchlab/internal/auth"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/db/dbgen"
 )
@@ -46,6 +48,12 @@ func main() {
 		dsn       = flag.String("database-url", os.Getenv("DATABASE_URL"), "PostgreSQL connection string")
 		modelsDir = flag.String("models", "models", "directory holding model artifact folders")
 		snapshot  = flag.String("snapshot", "statcast_full_20260911.parquet", "data snapshot the models were trained on")
+
+		adminUser = flag.String("admin-user", env("PITCHLAB_ADMIN_USER", "admin"),
+			"username of the initial administrator")
+		adminPass = flag.String("admin-password", os.Getenv("PITCHLAB_ADMIN_PASSWORD"),
+			"password for the initial administrator; generated and printed once if empty")
+		skipAdmin = flag.Bool("skip-admin", false, "do not touch the users table")
 	)
 	flag.Parse()
 
@@ -72,6 +80,12 @@ func main() {
 	if err := seedModels(ctx, store, log, *modelsDir, *snapshot); err != nil {
 		log.Error("seed models", "error", err)
 		os.Exit(1)
+	}
+	if !*skipAdmin {
+		if err := seedAdmin(ctx, store, log, *adminUser, *adminPass); err != nil {
+			log.Error("seed admin", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	log.Info("seed complete")
@@ -186,6 +200,66 @@ func seedModels(ctx context.Context, store *db.Store, log *slog.Logger, dir, sna
 		log.Warn("no model cards found", "dir", dir)
 	}
 	return nil
+}
+
+// seedAdmin creates or rotates the initial administrator.
+//
+// Two things here are deliberate and worth stating.
+//
+// First, there is no default password. A well-known one ships to production
+// far more often than anybody expects, and "admin/admin" behind a login page
+// is worse than no login page, because it looks protected. With no password
+// supplied a random one is generated and printed once; it exists nowhere else,
+// so losing it means running this command again.
+//
+// Second, re-running rotates the password rather than failing. That makes this
+// the recovery path for a lost credential, which is otherwise a database
+// surgery job.
+func seedAdmin(
+	ctx context.Context, store *db.Store, log *slog.Logger,
+	username, password string,
+) error {
+	generated := password == ""
+	if generated {
+		var err error
+		if password, err = auth.GenerateSecret(); err != nil {
+			return fmt.Errorf("generate password: %w", err)
+		}
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	user, err := store.UpsertUser(ctx, dbgen.UpsertUserParams{
+		ID:           db.NewID(),
+		Username:     username,
+		DisplayName:  "Administrator",
+		PasswordHash: hash,
+		Role:         "admin",
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Info("admin ready", "username", user.Username, "id", user.ID)
+
+	if generated {
+		// Written to stdout, not to the log. A password in a structured log
+		// line is a password in the log aggregator, retained for as long as
+		// the retention policy says -- which is exactly where it must not be.
+		fmt.Printf("\n  generated password for %q: %s\n"+
+			"  this is shown once; store it now\n\n", user.Username, password)
+	}
+	return nil
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func strPtr(s string) *string        { return &s }

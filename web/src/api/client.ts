@@ -48,10 +48,36 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
+/** unauthorized is called whenever the API says the session is gone.
+ *
+ * One place, rather than a 401 branch in every page. The session can expire
+ * between two requests -- the token lasts a day, and a dashboard left open
+ * overnight will outlive it -- and without this the app would sit there
+ * rendering errors instead of asking the person to sign in again. */
+let unauthorized: (() => void) | null = null;
+
+export function onUnauthorized(handler: (() => void) | null): void {
+  unauthorized = handler;
+}
+
+interface RequestOptions {
+  method?: string;
+  body?: unknown;
+  signal?: AbortSignal;
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(path, {
-    signal,
-    headers: { Accept: "application/json" },
+    method: options.method ?? "GET",
+    signal: options.signal,
+    // The session is an httpOnly cookie, so the credential is attached by the
+    // browser and is never readable from JavaScript -- which is the point:
+    // script that cannot read a token cannot exfiltrate one.
+    credentials: "same-origin",
+    headers: options.body
+      ? { Accept: "application/json", "Content-Type": "application/json" }
+      : { Accept: "application/json" },
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
 
   if (!response.ok) {
@@ -64,6 +90,14 @@ async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
     } catch {
       problem = null;
     }
+
+    // The login endpoint answers 401 for a wrong password, and that must not
+    // be read as "the session ended" -- it would clear a session that was
+    // never established and hide the message the person needs to see.
+    if (response.status === 401 && !path.startsWith("/api/v1/auth/")) {
+      unauthorized?.();
+    }
+
     throw new ApiError(response.status, problem, response.statusText);
   }
 
@@ -81,7 +115,39 @@ function query(params: Record<string, string | number | undefined | null>): stri
   return encoded ? `?${encoded}` : "";
 }
 
+/** User is the signed-in identity. It deliberately carries no token: there is
+ * nothing for the client to hold, because the credential lives in a cookie it
+ * cannot read. */
+export interface User {
+  id: string;
+  username: string;
+  display_name: string;
+  role: string;
+}
+
+export interface AuthSession {
+  user: User;
+  expires_at: string;
+}
+
 export const api = {
+  login(username: string, password: string) {
+    return request<AuthSession>("/api/v1/auth/login", {
+      method: "POST",
+      body: { username, password },
+    });
+  },
+
+  logout() {
+    return request<{ status: string }>("/api/v1/auth/logout", { method: "POST" });
+  },
+
+  /** me is how the app decides between the login page and the dashboard on
+   * load. It cannot read the cookie to find out, so it asks. */
+  me(signal?: AbortSignal) {
+    return request<AuthSession>("/api/v1/auth/me", { signal });
+  },
+
   athletes(params: { limit?: number; role?: string; q?: string } = {}) {
     return request<List<AthleteListItem>>(`/api/v1/athletes${query(params)}`);
   },

@@ -29,6 +29,15 @@ const (
 	TypeSubscribeMetrics = "subscribe.metrics"
 )
 
+// CloseTokenExpired is the application-defined close code for a connection
+// whose credential ran out.
+//
+// 4401 rather than a standard code, because the standard set has nothing that
+// means "authenticate again": 1008 (policy violation) tells a client to stop,
+// and 1013 tells it to retry unchanged. The 4000-4999 range exists for exactly
+// this, and the number echoes HTTP 401 so it reads without a lookup.
+const CloseTokenExpired = 4401
+
 // Error codes carried in an Error message's payload.
 const (
 	CodeSlowConsumer = "SLOW_CONSUMER"
