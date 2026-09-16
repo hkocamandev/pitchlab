@@ -125,8 +125,8 @@ const (
 type ModelTarget string
 
 const (
-	TargetOutcome5Class    ModelTarget = "outcome_5class"
-	TargetWhiffGivenSwing  ModelTarget = "whiff_given_swing"
+	TargetOutcome5Class   ModelTarget = "outcome_5class"
+	TargetWhiffGivenSwing ModelTarget = "whiff_given_swing"
 )
 
 // MeasurementQuality flags device readings that came back incomplete.
@@ -300,11 +300,11 @@ type PitchMeasurement struct {
 	// Derived, handedness-neutral frame: positive means arm side for a
 	// pitcher and inside for a batter. The direction was established from
 	// data, not from geometry.
-	PfxXArm         *float32
-	ReleasePosXArm  *float32
-	PlateXBat       *float32
-	ZoneHeightNorm  *float32
-	InZone          *bool
+	PfxXArm        *float32
+	ReleasePosXArm *float32
+	PlateXBat      *float32
+	ZoneHeightNorm *float32
+	InZone         *bool
 
 	// NormalizationVersion records which pass produced the derived columns.
 	// Without it, a partial re-normalization silently mixes conventions.
