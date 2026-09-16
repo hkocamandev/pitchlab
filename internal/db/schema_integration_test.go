@@ -277,7 +277,7 @@ func TestMeasurementBoundsRejectSensorFaults(t *testing.T) {
 			m := dbgen.UpsertPitchMeasurementParams{
 				PitchID: pitch.ID, DeviceID: &device.ID,
 				ReleaseSpeed: ptr(float32(87.4)), SpinAxis: ptr(float32(128)),
-				ReleaseExtension: ptr(float32(6.4)),
+				ReleaseExtension:     ptr(float32(6.4)),
 				NormalizationVersion: 1, MeasurementQuality: "OK",
 			}
 			tc.mutate(&m)
