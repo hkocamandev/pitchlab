@@ -357,6 +357,8 @@ The remaining twelve indexes each have a test that makes the planner name it in 
 
 A few decisions are worth stating because they are the ones a reviewer would push on.
 
+**Authentication wraps the handler, inside the metrics wrapper.** Every data route is registered through a helper that applies the session check, so a route added later is protected because of where it is registered rather than because somebody remembered to wrap it — forgetting to wrap one is the most common way a dashboard leaks. The auth middleware sits *inside* the instrumentation so refused requests are still counted: a 401 rate is one of the more useful things a dashboard can show, and instrumentation that only sees successful requests hides exactly the traffic worth looking at. A test walks every data route and asserts an anonymous caller gets 401 from each.
+
 **`GET /pitches` requires `pitcher_id`.** Without it the query is a sequential scan over millions of rows. Refusing to express the expensive query is cheaper than finding it in production and optimizing afterwards — the endpoint returns 400 and names the missing filter.
 
 **Pagination is keyset, and the cursor always carries an id.** Offsets shift under a table that is appended to continuously, so pages repeat or skip rows. The id tiebreaker is not decoration: replay can emit several pitches with the same timestamp, and paginating on time alone silently drops all but one at a page boundary. `HasMore` comes from fetching one row past the limit, because a `COUNT` over this table would cost as much as the page.
@@ -494,9 +496,11 @@ An unbounded queue would let one slow client consume server memory until the pro
 
 The close code is `1013 Try Again Later`, not `1011 Internal Error`. Nothing is broken; the server is shedding a client it cannot keep up with, and the code tells that client reconnecting is the right response.
 
-### Origin is checked even though there is no authentication
+### Origin is checked, and it is the outer of two fences
 
-v1 has no authentication — a deliberate scope decision. That is not a reason to skip the one control that needs none. WebSocket is *not* subject to the same-origin policy, so a server that does not check `Origin` lets any page on the internet open a connection on a visitor's behalf. The allowlist is read from configuration, rejects `*` at startup, and is applied **before** the upgrade: a refusal should cost an HTTP response, not a socket, two goroutines and a 256-slot buffer. A test asserts that a rejected origin does not even reach the snapshot query.
+WebSocket is *not* subject to the same-origin policy, so a server that does not check `Origin` lets any page on the internet open a connection on a visitor's behalf. The allowlist is read from configuration, rejects `*` at startup, and is applied **before** the upgrade: a refusal should cost an HTTP response, not a socket, two goroutines and a 256-slot buffer.
+
+The order of the handshake checks is deliberate — path, then origin, then authentication, then the per-address cap, then the snapshot, then the upgrade. Origin is checked before the credential because authenticating a request that is going to be refused anyway is work done on an attacker's behalf, and the snapshot query comes last because a rejected connection should not cost a database round trip. Tests assert both.
 
 ### The bug the live run found
 
@@ -713,6 +717,75 @@ Distributed tracing is still *not* included. At three processes on one machine, 
 
 ---
 
+## Authentication
+
+Every route that returns data requires a session. There is no anonymous read path, and `/healthz` and `/readyz` are the only exceptions — an orchestrator has no credential, and putting liveness behind a login makes a healthy container look dead.
+
+### The JWT implementation is about 120 lines, and that is the point
+
+Not "no dependencies for its own sake". A JWT library reads the algorithm **from the token** in order to decide how to verify it, and that single fact is the root of the `alg: none` family of vulnerabilities. Here the header is a constant:
+
+```go
+header := base64.RawURLEncoding.EncodeToString(
+    []byte(`{"alg":"HS256","typ":"JWT"}`))
+```
+
+The algorithm is never read from a token, so a token claiming `"alg":"none"` is simply a token with a bad signature. A test asserts it.
+
+Verification checks the **signature first and the expiry second**. Reading the claims of a token whose signature has not been checked means acting on attacker-supplied data — even if all you do with it is decide that it has expired.
+
+The alternative was `golang-jwt/jwt`, which is mature and widely used. It was not rejected for quality: this project has exactly one algorithm, and every place a library is flexible is a place this codebase would have to defend.
+
+### The token lives in an httpOnly cookie, never in a URL
+
+The original design put it in a query parameter, and the reasoning was sound as far as it went: a browser's WebSocket API cannot send custom headers, so a token held in JavaScript has nowhere else to go. But a URL ends up in access logs, browser history and `Referer` headers.
+
+The premise disappears once the cookie is httpOnly — the browser attaches it to the WebSocket handshake by itself, so the socket is authenticated without JavaScript ever seeing the credential. Script that cannot read a token cannot leak one.
+
+Cookies reintroduce CSRF, which bearer tokens do not have, so there are two fences: `SameSite=Strict`, and an `Origin` check on every state-changing request. Two, because `SameSite` is browser policy and the origin check is ours. Two tests exist specifically to stop a query-string token from being added back as a convenience.
+
+| | |
+|---|---|
+| Hashing | Argon2id, 64 MiB · t=3 · p=4, parameters carried in the PHC string so cost is upgradable and old hashes still verify |
+| Token lifetime | 24 hours |
+| Cookie | `HttpOnly`, `SameSite=Strict`, `Secure` when the request arrived over TLS |
+| Roles | `viewer` reads; `admin` also writes. A viewer on a write route gets **403, not 401** — re-authenticating would not help, and telling them to log in again sends them round a loop |
+
+### Failing closed
+
+With no signing key configured, protected routes return 503 rather than serving data. A missing cache degrades to slower; a missing authenticator has to degrade to closed. The most valuable test in the HTTP suite asserts exactly that, because a misconfiguration is the likeliest way this would ever be wrong.
+
+The same rule applies one level up: the API refuses to start if `PITCHLAB_JWT_SECRET` is empty or shorter than 32 bytes. A generated fallback would let the service boot and look healthy while invalidating every session on each restart and making two replicas reject each other's tokens.
+
+### Login throttling has two layers and two limits
+
+Two layers because neither alone is acceptable. Redis alone makes the cache load-bearing: fail open and anyone who can disturb Redis also switches off brute-force protection; fail closed and a cache outage takes login down — which contradicts the rule the whole cache layer is built around. So Redis is the shared counter when it is there, and an in-process counter takes over when it is not. The fallback is weaker (per replica), and that gap is written down rather than hidden.
+
+Two limits because the two keys mean different things:
+
+| Key | Limit per 5 min | Why |
+|---|---|---|
+| `user:<name>` | 5 | This is the one that protects a password |
+| `addr:<ip>` | 50 | An address is not an identity |
+
+They started out equal, and a live run showed why that was wrong: successful logins increment the address counter too, so one office behind a NAT would lock out its sixth person to sign in that morning — the protection causing the outage it exists to prevent. Redis keys are hashed, so attempted usernames do not accumulate in slow-query logs.
+
+Every failure — no such user, wrong password, disabled account — returns the same message, and a missing user still pays the cost of a full Argon2id verification. Without that, the timing difference alone would enumerate accounts and make the identical message pointless.
+
+### The socket does not outlive the credential
+
+A token lasts a day; a WebSocket can stay open far longer. Checking only at the handshake would leave a socket streaming data hours after its session expired, so each connection carries a timer and closes with **4401** when its credential does. Not 1000 or 1013: the client's correct response is different — reconnecting unchanged will fail, and it needs a fresh credential.
+
+Connections are also capped at 20 per address, and a **rejected handshake returns its slot**. Without that, repeated failures would exhaust the cap and lock out the legitimate client — turning the protection into the denial of service it was meant to prevent. That is its own test.
+
+### Response headers
+
+The API sends `nosniff`, `DENY`, `no-referrer`, a `Permissions-Policy`, and `default-src 'none'` — checked on a 401, because headers applied only on the success path are missing from exactly the responses an attacker sees most of. HSTS is sent only when the request arrived over TLS, so a development host is never pinned to https in the browser's own store.
+
+The dashboard gets its own policy from nginx, where `script-src 'self'` is the directive that matters: no inline script, so an injected `<script>` or `javascript:` URL does not execute. `style-src` concedes `'unsafe-inline'` because the charting library sets element styles directly — a much narrower capability than inline script, and the concession is written down rather than silently taken.
+
+---
+
 ## What breaks it, and what happens then
 
 The claims this design makes about failure — "Redis is not critical", "no pitch is lost", "the processor recovers" — are statements about behaviour under conditions no ordinary test creates. They are checked by stopping real containers while real traffic is flowing, behind their own build tag because they take minutes and disturb shared infrastructure.
@@ -765,7 +838,7 @@ There is no SQL injection surface — no query is built by concatenation, and th
 
 ### What was deliberately not fixed
 
-`docs/hardening-report.md` lists eleven open items with reasons. The short version: no rate limiting (without authentication it would be per-IP, protecting nothing); no `EXPLAIN` hunt (the rule was not to optimise without measuring, and the measurement found nothing to optimise); no OpenTelemetry (`correlation_id` did not fall short — `make trace` reconstructs a pitch's whole journey); no 2026 regime correction (phase 10 made the drift *visible*; correcting it needs a verifiable transform between two regimes, and detection correctly comes first).
+`docs/hardening-report.md` lists eleven open items with reasons. The short version: no rate limiting (true at the time — without authentication it could only be per-IP, and phase 13 added it where it means something: per account); no `EXPLAIN` hunt (the rule was not to optimise without measuring, and the measurement found nothing to optimise); no OpenTelemetry (`correlation_id` did not fall short — `make trace` reconstructs a pitch's whole journey); no 2026 regime correction (phase 10 made the drift *visible*; correcting it needs a verifiable transform between two regimes, and detection correctly comes first).
 
 The integration and chaos suites are **not** in CI. They need a broker, a database and a cache, and the chaos suite stops containers while traffic is flowing. Running them against a half-started service and calling it green would be worse than saying they run locally.
 
@@ -781,6 +854,7 @@ The integration and chaos suites are **not** in CI. They need a broker, a databa
 | Database | PostgreSQL 16 | Strong constraints, JSONB, partial indexes, `sqlc` for compile-time-safe SQL |
 | Cache | Redis 7 | Ephemeral live state and expensive-aggregation caching — never the system of record |
 | Frontend | React 18 · Vite · TypeScript | Fast dev loop; TanStack Query for server state, `useReducer` for the stream |
+| Auth | Argon2id · HS256 JWT in an httpOnly cookie | Hand-rolled verification with one fixed algorithm; no library flexibility to defend |
 | Observability | Prometheus · Grafana · `log/slog` · `prometheus-client` | Self-hosted, standard, one `compose up`; dashboards provisioned from the repository |
 | Orchestration | Docker Compose | Kubernetes is operational overhead at this size |
 
@@ -821,6 +895,7 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 10 | Observability | ✅ Complete |
 | 11 | Hardening · chaos, load, security | ✅ Complete |
 | 12 | Demo & documentation | ✅ Complete |
+| 13 | Authentication & security hardening | ✅ Complete |
 
 Each phase produces something demonstrable on its own — no phase leaves an intermediate artifact that "only makes sense next time."
 
@@ -851,6 +926,19 @@ About three minutes cold, about twenty seconds once the images are built.
 | Dashboard | http://localhost:5174 |
 | API | http://localhost:8081/api/v1/athletes |
 | Metrics | http://localhost:8081/metrics · http://localhost:9091/metrics |
+
+`make demo` generates a `.env` on first run with a signing secret and an
+administrator password, both random. The dashboard asks for them:
+
+```bash
+grep PITCHLAB_ADMIN .env    # the username and password to sign in with
+make token                  # a session token for the command-line tools
+```
+
+`.env` is gitignored. There is no default password anywhere in the code — a
+well-known one ships to production more often than anyone expects, and
+`admin/admin` behind a login page is worse than no login page, because it
+looks protected.
 
 ```bash
 make observability   # Prometheus on :9090, Grafana on :3000, five dashboards
@@ -1028,6 +1116,7 @@ The project is finished when all of the following are true:
 - [x] Stopping Redis degrades performance without failing a single request
 - [x] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
 - [x] One `correlation_id` traces a single pitch end-to-end across every service log
+- [x] No data is served, over REST or WebSocket, without a valid session
 
 ---
 

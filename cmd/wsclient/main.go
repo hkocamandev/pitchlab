@@ -37,7 +37,9 @@ func run() error {
 		addr = flag.String("addr", env("PITCHLAB_API_ADDR_PUBLIC", "localhost:8081"),
 			"API host:port")
 		session = flag.String("session", "", "session id to watch (required)")
-		origin  = flag.String("origin", "http://localhost:5173",
+		token   = flag.String("token", os.Getenv("PITCHLAB_TOKEN"),
+			"session token; sent as a bearer credential, not in the URL")
+		origin = flag.String("origin", "http://localhost:5173",
 			"Origin header; the server checks it")
 		verbose = flag.Bool("verbose", false, "print the full payload of every message")
 	)
@@ -58,7 +60,7 @@ func run() error {
 	// that just restarted must not be met by every dashboard at once.
 	backoff := time.Second
 	for {
-		err := watch(ctx, url, *origin, *verbose)
+		err := watch(ctx, url, *origin, *token, *verbose)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -76,8 +78,15 @@ func run() error {
 	}
 }
 
-func watch(ctx context.Context, url, origin string, verbose bool) error {
+func watch(ctx context.Context, url, origin, token string, verbose bool) error {
 	header := map[string][]string{"Origin": {origin}}
+	if token != "" {
+		// A header, not a query parameter. The browser uses a cookie it
+		// cannot read; a command-line client has no cookie jar, so it sends
+		// the token the way every other non-browser client does -- and a URL
+		// still must not carry a credential.
+		header["Authorization"] = []string{"Bearer " + token}
+	}
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, url, header)
 	if err != nil {
 		if resp != nil {

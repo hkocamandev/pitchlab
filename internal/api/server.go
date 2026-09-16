@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hkocamandev/pitchlab/internal/auth"
 	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
@@ -37,6 +38,13 @@ type Server struct {
 	// metrics is optional. With none attached the routes are registered
 	// unwrapped and /metrics is absent, which is what the handler tests use.
 	metrics *observability.Metrics
+
+	// signer is optional in the same way, and its absence has a very
+	// different meaning from the others: with no signer the API refuses every
+	// authenticated route rather than serving them openly. Failing closed is
+	// the only safe default for an authorisation check.
+	signer  *auth.Signer
+	limiter *auth.Limiter
 }
 
 // RedisChecker is the slice of Redis the API needs for readiness. Keeping it
@@ -81,6 +89,17 @@ func (s *Server) WithCache(c *cache.Cache) *Server {
 	return s
 }
 
+// WithAuth enables authentication.
+//
+// Without it the API has no login endpoint and every protected route answers
+// 503 rather than serving data. That asymmetry is deliberate: a missing cache
+// degrades to slower, a missing authenticator must degrade to closed.
+func (s *Server) WithAuth(signer *auth.Signer, limiter *auth.Limiter) *Server {
+	s.signer = signer
+	s.limiter = limiter
+	return s
+}
+
 // WithMetrics attaches the Prometheus registry and exposes /metrics.
 func (s *Server) WithMetrics(m *observability.Metrics) *Server {
 	s.metrics = m
@@ -99,6 +118,21 @@ func (s *Server) route(mux *http.ServeMux, pattern string, h http.Handler) {
 		h = s.metrics.InstrumentRoute(routeLabel(pattern), h)
 	}
 	mux.Handle(pattern, h)
+}
+
+// secure registers a route that requires a signed-in caller.
+//
+// Authentication wraps the handler *inside* the metrics wrapper, so a rejected
+// request is still counted -- a 401 rate is one of the more useful things a
+// dashboard can show, and instrumentation that only sees successful requests
+// hides exactly the traffic worth looking at.
+func (s *Server) secure(mux *http.ServeMux, pattern string, h http.Handler) {
+	s.route(mux, pattern, s.RequireAuth(h))
+}
+
+// secureRole registers a route that requires a specific role.
+func (s *Server) secureRole(mux *http.ServeMux, role, pattern string, h http.Handler) {
+	s.route(mux, pattern, s.RequireRole(role, h))
 }
 
 // routeLabel drops the method from a pattern, which carries it as its own
@@ -129,30 +163,41 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /metrics", s.metrics.Handler())
 	}
 
+	// Authentication. These are the only /api/v1 routes that do not require a
+	// session -- login cannot, and logout has to work even with an expired
+	// token so a client can always clear its own cookie.
+	s.route(mux, "POST /api/v1/auth/login", s.handler(s.login))
+	s.route(mux, "POST /api/v1/auth/logout", s.handler(s.logout))
+	s.secure(mux, "GET /api/v1/auth/me", s.handler(s.currentUser))
+
 	// athletes
-	s.route(mux, "GET /api/v1/athletes", s.handler(s.listAthletes))
-	s.route(mux, "GET /api/v1/athletes/{athleteId}", s.handler(s.getAthlete))
-	s.route(mux, "GET /api/v1/athletes/{athleteId}/analytics", s.handler(s.getAthleteAnalytics))
-	s.route(mux, "GET /api/v1/athletes/{athleteId}/sessions", s.handler(s.listAthleteSessions))
-	s.route(mux, "GET /api/v1/athletes/{athleteId}/anomalies", s.handler(s.listAthleteAnomalies))
+	s.secure(mux, "GET /api/v1/athletes", s.handler(s.listAthletes))
+	s.secure(mux, "GET /api/v1/athletes/{athleteId}", s.handler(s.getAthlete))
+	s.secure(mux, "GET /api/v1/athletes/{athleteId}/analytics", s.handler(s.getAthleteAnalytics))
+	s.secure(mux, "GET /api/v1/athletes/{athleteId}/sessions", s.handler(s.listAthleteSessions))
+	s.secure(mux, "GET /api/v1/athletes/{athleteId}/anomalies", s.handler(s.listAthleteAnomalies))
 
 	// sessions
-	s.route(mux, "GET /api/v1/sessions", s.handler(s.listSessions))
-	s.route(mux, "GET /api/v1/sessions/{sessionId}", s.handler(s.getSession))
-	s.route(mux, "GET /api/v1/sessions/{sessionId}/pitches", s.handler(s.listSessionPitches))
-	s.route(mux, "POST /api/v1/sessions/{sessionId}/close", s.handler(s.closeSession))
+	s.secure(mux, "GET /api/v1/sessions", s.handler(s.listSessions))
+	s.secure(mux, "GET /api/v1/sessions/{sessionId}", s.handler(s.getSession))
+	s.secure(mux, "GET /api/v1/sessions/{sessionId}/pitches", s.handler(s.listSessionPitches))
+	// State-changing, so admin only. A viewer can read everything and change
+	// nothing, which is the distinction the two roles exist to draw.
+	s.secureRole(mux, RoleAdmin, "POST /api/v1/sessions/{sessionId}/close",
+		s.handler(s.closeSession))
 
 	// pitches and predictions
-	s.route(mux, "GET /api/v1/pitches/{pitchId}/explanation", s.handler(s.getPitchExplanation))
-	s.route(mux, "GET /api/v1/pitches", s.handler(s.listPitches))
-	s.route(mux, "GET /api/v1/pitches/{pitchId}", s.handler(s.getPitch))
-	s.route(mux, "GET /api/v1/pitches/{pitchId}/predictions", s.handler(s.listPitchPredictions))
+	s.secure(mux, "GET /api/v1/pitches/{pitchId}/explanation", s.handler(s.getPitchExplanation))
+	s.secure(mux, "GET /api/v1/pitches", s.handler(s.listPitches))
+	s.secure(mux, "GET /api/v1/pitches/{pitchId}", s.handler(s.getPitch))
+	s.secure(mux, "GET /api/v1/pitches/{pitchId}/predictions", s.handler(s.listPitchPredictions))
 
 	// models
-	s.route(mux, "GET /api/v1/models", s.handler(s.listModels))
+	s.secure(mux, "GET /api/v1/models", s.handler(s.listModels))
 
 	// anomalies
-	s.route(mux, "POST /api/v1/anomalies/{anomalyId}/acknowledge", s.handler(s.acknowledgeAnomaly))
+	s.secureRole(mux, RoleAdmin, "POST /api/v1/anomalies/{anomalyId}/acknowledge",
+		s.handler(s.acknowledgeAnomaly))
 
 	// The real-time channel sits outside /api/v1. It is a different protocol
 	// with a different lifecycle, and versioning it alongside REST resources
@@ -164,6 +209,10 @@ func (s *Server) Routes() http.Handler {
 	// Order matters: RequestID runs first so everything downstream, including
 	// the panic handler, can label its output with the request id.
 	var h http.Handler = mux
+	// Innermost first. The same-origin check sits closest to the handlers so
+	// that it runs after routing and only for the methods that change
+	// something.
+	h = s.RequireSameOrigin(h)
 	// Timeout only bounds the handler's own execution -- for a WebSocket that
 	// is the handshake, since the pumps outlive the request and hold the
 	// hijacked connection, not the request context.
@@ -171,6 +220,10 @@ func (s *Server) Routes() http.Handler {
 	h = httpx.Recovery(h)
 	h = httpx.CORS(s.cfg.AllowsOrigin)(h)
 	h = httpx.Logging(s.log)(h)
+	// Outermost, so that even a response written by the panic handler or by a
+	// rejected request carries them.
+	h = httpx.SecurityHeaders(h)
+	h = httpx.LimitBody(h)
 	h = httpx.RequestID(h)
 	return h
 }

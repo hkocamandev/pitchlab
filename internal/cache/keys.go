@@ -49,6 +49,15 @@ func analyticsKey(athleteID uuid.UUID, generation int64, variant string) string 
 		Prefix, athleteID, SchemaVersion, generation, variant)
 }
 
+// rateLimitKey namespaces a login throttle counter.
+//
+// The caller's key already contains a username or an address, so it is hashed
+// rather than embedded: Redis keys end up in slow-query logs and monitoring
+// tools, and neither is a place to leave a list of attempted usernames.
+func rateLimitKey(key string) string {
+	return fmt.Sprintf("%sratelimit:login:%s", Prefix, Variant(key))
+}
+
 // Variant reduces a request's parameters to a short, stable key fragment.
 //
 // Hashed rather than concatenated so the key length does not depend on what

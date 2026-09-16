@@ -167,3 +167,16 @@ type Session struct {
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
+
+// Dashboard accounts. Passwords are Argon2id PHC strings, never plaintext.
+type User struct {
+	ID           uuid.UUID
+	Username     string
+	DisplayName  string
+	PasswordHash string
+	Role         string
+	IsActive     bool
+	LastLoginAt  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}

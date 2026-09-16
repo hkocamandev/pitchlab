@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hkocamandev/pitchlab/internal/api"
+	"github.com/hkocamandev/pitchlab/internal/auth"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
 	"github.com/hkocamandev/pitchlab/internal/observability"
@@ -54,15 +55,28 @@ func newObservableServer(
 		LogLevel:        "error",
 		LogFormat:       "json",
 		Version:         "test",
+		JWTSecret:       integrationSecret,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config: %v", err)
 	}
 
+	signer, err := auth.NewSigner(integrationSecret)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	srv := httptest.NewServer(
-		api.New(cfg, db.NewStore(pool), log).WithMetrics(metrics).Routes())
+		api.New(cfg, db.NewStore(pool), log).
+			WithMetrics(metrics).
+			WithAuth(signer, auth.NewLimiter(nil)).
+			Routes())
 	t.Cleanup(srv.Close)
+
+	// These tests assert on the shape of the metric labels, which is only
+	// meaningful for requests that actually reach a handler.
+	authenticate(t, srv, signer, api.RoleAdmin)
 
 	return srv, metrics, pool
 }

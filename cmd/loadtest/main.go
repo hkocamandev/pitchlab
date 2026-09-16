@@ -51,6 +51,8 @@ func run() error {
 		concurrency = flag.Int("concurrency", 50, "concurrent REST workers")
 		connections = flag.Int("connections", 500, "WebSocket connections to open")
 		origin      = flag.String("origin", "http://localhost:5173", "Origin header")
+		token       = flag.String("token", os.Getenv("PITCHLAB_TOKEN"),
+			"session token; every endpoint under test requires one")
 	)
 	flag.Parse()
 
@@ -67,7 +69,7 @@ func run() error {
 		if *athlete == "" {
 			return errors.New("--athlete is required for --rest")
 		}
-		if err := loadREST(ctx, *addr, *athlete, *session, *duration, *concurrency); err != nil {
+		if err := loadREST(ctx, *addr, *athlete, *session, *token, *duration, *concurrency); err != nil {
 			return err
 		}
 	}
@@ -76,7 +78,7 @@ func run() error {
 		if *session == "" {
 			return errors.New("--session is required for --ws")
 		}
-		if err := loadWebSocket(ctx, *addr, *session, *origin, *connections, *duration); err != nil {
+		if err := loadWebSocket(ctx, *addr, *session, *origin, *token, *connections, *duration); err != nil {
 			return err
 		}
 	}
@@ -93,7 +95,7 @@ type sample struct {
 }
 
 func loadREST(
-	ctx context.Context, addr, athlete, session string,
+	ctx context.Context, addr, athlete, session, token string,
 	duration time.Duration, concurrency int,
 ) error {
 	// A mix rather than one endpoint. The expensive rollup and a cheap lookup
@@ -151,6 +153,9 @@ func loadREST(
 					"http://"+addr+route.path, nil)
 				if err != nil {
 					continue
+				}
+				if token != "" {
+					req.Header.Set("Authorization", "Bearer "+token)
 				}
 				resp, err := client.Do(req)
 				elapsed := time.Since(begin)
@@ -257,7 +262,7 @@ func round(d time.Duration) string {
 // --- WebSocket -------------------------------------------------------------
 
 func loadWebSocket(
-	ctx context.Context, addr, session, origin string,
+	ctx context.Context, addr, session, origin, token string,
 	connections int, hold time.Duration,
 ) error {
 	fmt.Printf("\nWebSocket load: opening %d connections to %s, holding %s\n\n",
@@ -283,6 +288,9 @@ func loadWebSocket(
 
 	url := "ws://" + addr + "/ws/sessions/" + session
 	header := http.Header{"Origin": []string{origin}}
+	if token != "" {
+		header.Set("Authorization", "Bearer "+token)
+	}
 
 	dialer := *websocket.DefaultDialer
 	// The default pool is small; without this the test measures the dialer.

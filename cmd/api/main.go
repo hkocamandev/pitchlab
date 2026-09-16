@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hkocamandev/pitchlab/internal/api"
+	"github.com/hkocamandev/pitchlab/internal/auth"
 	"github.com/hkocamandev/pitchlab/internal/cache"
 	"github.com/hkocamandev/pitchlab/internal/config"
 	"github.com/hkocamandev/pitchlab/internal/db"
@@ -126,10 +127,27 @@ func run() error {
 	ml := mlclient.New(mlCfg, log)
 	metrics.TrackBreaker(func() string { return ml.BreakerState().String() })
 
+	// The signer is built from the validated configuration, so this cannot
+	// fail for a missing or short secret -- that was already reported at
+	// startup. It is still checked: a constructor that can fail should not be
+	// called as if it cannot.
+	signer, err := auth.NewSigner(cfg.JWTSecret)
+	if err != nil {
+		return err
+	}
+
+	// Login throttling counts in Redis when Redis is there and in memory when
+	// it is not. A nil cache is a valid argument here, exactly as it is
+	// everywhere else: counting in memory is weaker -- each replica throttles
+	// separately -- but it is what keeps the limiter from turning the cache
+	// into a dependency the service cannot start without.
+	limiter := auth.NewLimiter(redis)
+
 	srv := api.New(cfg, store, log).
 		WithMetrics(metrics).
 		WithCache(redis).
 		WithInference(ml).
+		WithAuth(signer, limiter).
 		WithWebSocket(hub).
 		HTTPServer()
 

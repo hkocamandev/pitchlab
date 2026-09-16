@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hkocamandev/pitchlab/internal/auth"
 )
 
 // API is the configuration for the HTTP server process.
@@ -25,9 +27,18 @@ type API struct {
 
 	// AllowedOrigins gates both CORS and the WebSocket handshake. WebSocket
 	// is not subject to the same-origin policy, so an unchecked Origin lets
-	// any site open a connection. Authentication is out of scope for v1;
-	// origin checking is not.
+	// any site open a connection. It is the outer fence; authentication is
+	// the inner one.
 	AllowedOrigins []string
+
+	// JWTSecret signs session tokens.
+	//
+	// There is no default and no generated fallback. A generated secret would
+	// let the service start without one, which reads as working and is not:
+	// every restart would invalidate every session, and two API replicas would
+	// reject each other's tokens. An empty secret is a configuration error,
+	// reported at startup rather than discovered at the first login.
+	JWTSecret string
 
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
@@ -65,6 +76,7 @@ func LoadAPI() (API, error) {
 		LogLevel:        env("PITCHLAB_LOG_LEVEL", "info"),
 		LogFormat:       env("PITCHLAB_LOG_FORMAT", "json"),
 		Version:         env("PITCHLAB_VERSION", "dev"),
+		JWTSecret:       os.Getenv("PITCHLAB_JWT_SECRET"),
 	}
 
 	return cfg, cfg.Validate()
@@ -106,6 +118,18 @@ func (c API) Validate() error {
 	}
 	if c.DefaultPageSize > c.MaxPageSize {
 		problems = append(problems, "PITCHLAB_DEFAULT_PAGE_SIZE exceeds PITCHLAB_MAX_PAGE_SIZE")
+	}
+	// Checked here rather than left to the signer so that a short secret is
+	// one of the problems listed at startup, alongside the others, instead of
+	// a separate failure a step later.
+	if c.JWTSecret == "" {
+		problems = append(problems,
+			"PITCHLAB_JWT_SECRET is empty; generate one with "+
+				"`openssl rand -base64 48`")
+	} else if len(c.JWTSecret) < auth.MinSecretLength {
+		problems = append(problems, fmt.Sprintf(
+			"PITCHLAB_JWT_SECRET is %d bytes; at least %d are required",
+			len(c.JWTSecret), auth.MinSecretLength))
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":

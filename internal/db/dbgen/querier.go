@@ -22,6 +22,7 @@ type Querier interface {
 	CountMeasurementsByNormalizationVersion(ctx context.Context) ([]CountMeasurementsByNormalizationVersionRow, error)
 	// Served by the partial index ix_anomaly_open.
 	CountOpenAnomalies(ctx context.Context, athleteID uuid.UUID) (int64, error)
+	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	// Step one of activation. Must run in the same transaction as step two.
 	DeactivateModelVariant(ctx context.Context, variant string) error
 	// Tracing support: resolve a correlation id seen in logs back to the pitch.
@@ -92,6 +93,10 @@ type Querier interface {
 	// The session under evaluation, shaped like one row of the baseline window.
 	GetSessionMetricMedians(ctx context.Context, arg GetSessionMetricMediansParams) (GetSessionMetricMediansRow, error)
 	GetSessionOutcomeDistribution(ctx context.Context, sessionID uuid.UUID) ([]GetSessionOutcomeDistributionRow, error)
+	GetUser(ctx context.Context, id uuid.UUID) (User, error)
+	// Looked up by the lowered form so that login is case-insensitive, matching
+	// the unique index. The stored casing is returned for display.
+	GetUserByUsername(ctx context.Context, lower string) (User, error)
 	// Idempotent via the unique index on
 	// (session_id, metric, COALESCE(pitch_type, ''), detector_version).
 	// COALESCE is not cosmetic: NULL <> NULL in a plain unique constraint, so
@@ -135,6 +140,7 @@ type Querier interface {
 	// Served by ix_sessions_pitcher_started: the composite index covers both the
 	// filter and the ordering, so there is no sort step.
 	ListSessionsByAthlete(ctx context.Context, arg ListSessionsByAthleteParams) ([]Session, error)
+	ListUsers(ctx context.Context) ([]User, error)
 	// Step two of activation.
 	//
 	// This was first written as a single statement with a data-modifying CTE that
@@ -159,6 +165,10 @@ type Querier interface {
 	// a replayed or repaired session converges on the truth instead of drifting,
 	// and pitch_count cross-checks the rest.
 	RecomputeSessionAggregates(ctx context.Context, id uuid.UUID) (Session, error)
+	// Separate from the lookup so a successful verification is recorded without
+	// holding a transaction open across the password comparison, which is
+	// deliberately slow.
+	RecordLogin(ctx context.Context, id uuid.UUID) error
 	SetPitchPredictionStatus(ctx context.Context, arg SetPitchPredictionStatusParams) error
 	// Idempotent by mlbam_id. The event stream re-announces the same athlete on
 	// every pitch, so this must converge rather than accumulate. Name and
@@ -179,6 +189,9 @@ type Querier interface {
 	// Idempotent by external_session_uid. Replaying the same outing twice must
 	// reuse the session rather than create a second one.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) (Session, error)
+	// Used by the seed command so that re-running it rotates the password rather
+	// than failing on a conflict.
+	UpsertUser(ctx context.Context, arg UpsertUserParams) (User, error)
 }
 
 var _ Querier = (*Queries)(nil)

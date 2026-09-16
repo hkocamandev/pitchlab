@@ -55,6 +55,14 @@ type Client struct {
 	log       *slog.Logger
 	timeouts  Timeouts
 
+	// identity is the caller this connection was opened for. Empty when the
+	// channel runs without an authenticator.
+	identity Identity
+	// onClose gives back whatever the handshake reserved -- currently the
+	// per-address connection slot. Called exactly once.
+	onClose     func()
+	closeOnceFn sync.Once
+
 	send chan Message
 
 	// nextSeq is shared because the snapshot is numbered before the hub takes
@@ -245,6 +253,15 @@ func (c *Client) noteDrop() {
 	}
 }
 
+// releaseReservation returns whatever the handshake reserved.
+func (c *Client) releaseReservation() {
+	c.closeOnceFn.Do(func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+}
+
 func (c *Client) closeForBackpressure() {
 	c.closeOnce.Do(func() { close(c.closeSlow) })
 }
@@ -252,9 +269,21 @@ func (c *Client) closeForBackpressure() {
 // writePump owns the socket's write side.
 func (c *Client) writePump(done <-chan struct{}) {
 	ticker := time.NewTicker(c.timeouts.Ping)
+
+	// A timer rather than a deadline check per message: an idle connection
+	// sends nothing, and a check that only runs on send would never fire on
+	// the connection most worth closing.
+	var expiry <-chan time.Time
+	if !c.identity.ExpiresAt.IsZero() {
+		timer := time.NewTimer(time.Until(c.identity.ExpiresAt))
+		defer timer.Stop()
+		expiry = timer.C
+	}
+
 	defer func() {
 		ticker.Stop()
 		_ = c.conn.Close()
+		c.releaseReservation()
 	}()
 
 	for {
@@ -287,6 +316,19 @@ func (c *Client) writePump(done <-chan struct{}) {
 			// The server is shedding a client it cannot keep up with, and the
 			// code tells the client that reconnecting is the right response.
 			c.writeClose(websocket.CloseTryAgainLater, "client too slow")
+			return
+
+		case <-expiry:
+			// The credential that opened this socket has expired.
+			//
+			// Checking only at the handshake would let a connection opened one
+			// minute before expiry live for days -- which is the one place a
+			// long-lived connection defeats a short-lived token. 4401 is the
+			// application-defined code the contract reserves for this, so the
+			// client knows to refresh and reconnect rather than to back off.
+			c.log.Info("closing connection: credential expired",
+				"user_id", c.identity.UserID)
+			c.writeClose(CloseTokenExpired, "credential expired")
 			return
 
 		case <-done:
@@ -323,6 +365,7 @@ func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister(c)
 		_ = c.conn.Close()
+		c.releaseReservation()
 	}()
 
 	c.conn.SetReadLimit(MaxClientMessage)

@@ -160,6 +160,10 @@ services:
       PITCHLAB_ML_URL: http://pitchlab-ml:8000
       PITCHLAB_API_ADDR: ":8081"
       PITCHLAB_ALLOWED_ORIGINS: http://localhost:5174,http://localhost:5173
+      # No default, and the ":?" is the point: compose refuses to start the
+      # stack rather than substituting an empty string. A signing key with a
+      # fallback value is a signing key an attacker already has.
+      PITCHLAB_JWT_SECRET: ${PITCHLAB_JWT_SECRET:?set it in .env, or run `make secrets`}
       PITCHLAB_LOG_LEVEL: ${PITCHLAB_LOG_LEVEL:-info}
       PITCHLAB_VERSION: ${PITCHLAB_VERSION:-dev}
     ports:
