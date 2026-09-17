@@ -34,5 +34,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // Only the unit suite. e2e/ holds the documentation captures, which need
+    // a browser and a running stack -- collected here they would fail on
+    // every `npm test` for reasons that have nothing to do with the code.
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
 });

@@ -72,6 +72,123 @@ The rule: a hop is synchronous when someone is *waiting for the answer*. The pro
 
 ---
 
+---
+
+## See it running
+
+Two clips, both recorded against the running stack — the real API, the real
+model, the real broker. Nothing here is a mock-up or a storyboard: the
+capture scripts drive a browser through the live dashboard and the images are
+what came out. ([how they are made](#how-these-were-captured))
+
+### A pitch, from the wire to the screen
+
+<img src="screenshots/live-pitch-flow.gif" alt="Signing in, opening a live outing, and watching pitches arrive with predictions" width="820">
+
+Sign in, open an outing that is being written to right now, and watch. Each
+row appears when a pitch has already crossed Kafka, been normalized, scored by
+the model and committed to PostgreSQL — the dashboard is the last step, not a
+simulation of one. The velocity chart, the game state and the per-pitch
+prediction panel all move together because they are all driven by the same
+WebSocket message.
+
+*[Full quality (MP4)](screenshots/live-pitch-flow.mp4)*
+
+### One pitch, and why the model said so
+
+<img src="screenshots/pitch-explained.gif" alt="Walking from a pitcher's profile to one pitch, its prediction against the outcome, and the feature attribution behind it" width="820">
+
+From a pitcher's aggregate profile down to a single pitch: what the model
+predicted, what actually happened, and which features moved the prediction.
+The attribution is computed on demand, per pitch, in the model's own log-odds
+space — and the panel resets when a different pitch is selected, which is a
+smaller detail than it sounds. (See [the bug that found](#three-bugs-the-capture-work-found).)
+
+*[Full quality (MP4)](screenshots/pitch-explained.mp4)*
+
+---
+
+## The evidence
+
+The claims this README makes are checkable, and these are the checks.
+
+### Nothing is served without a session
+
+<img src="screenshots/evidence-auth.png" alt="Terminal session showing 401 for anonymous requests, one message for a wrong password, an httpOnly cookie on success, and the WebSocket handshake refused without it" width="820">
+
+Anonymous reads are refused. A wrong password gets the same message whether
+the account exists or not. A correct one returns an httpOnly cookie and **no
+token in the body**. The live channel is behind the same fence, checked before
+the upgrade — 401 without the cookie, 101 with it.
+
+<p align="center">
+  <img src="screenshots/auth-login.png" alt="The sign-in page" width="400">
+  <img src="screenshots/auth-login-rejected.png" alt="A rejected sign-in, showing one message and a cleared password field" width="400">
+</p>
+
+The failure state is worth its own picture: one message, the username kept,
+the password cleared. Keeping a wrong password in the field is how a person
+resubmits it by reflex and spends another throttle attempt.
+
+### A poison message goes to the dead-letter queue, and the consumer keeps going
+
+<img src="screenshots/evidence-dlq.png" alt="Terminal session showing a malformed event being published, classified, dead-lettered, inspected and replayed until a ceiling refuses it" width="820">
+
+`make poison` publishes one malformed event into the live topic. The consumer
+classifies it, writes a dead letter carrying the original bytes and the
+reason, commits the offset and carries on. The letter can then be inspected
+and replayed — but only so many times, because a message that will never
+parse must not cycle through the queue for ever.
+
+### The pipeline, while that was happening
+
+<img src="screenshots/grafana-pipeline.png" alt="Grafana: consumer lag by partition, messages consumed per second, processing time, dead letters, produce errors and duplicates skipped" width="900">
+
+<img src="screenshots/grafana-model-serving.png" alt="Grafana: inference latency percentiles, caller-side latency, predictions per second, circuit breaker state and predicted class distribution" width="900">
+
+Inference p99 at 24.6 ms, no inference errors, the circuit breaker closed, and
+the predicted class distribution — which is the drift indicator, not a
+decoration: when the mix of predicted outcomes moves away from the training
+distribution, that line moves first.
+
+<img src="screenshots/grafana-system-health.png" alt="Grafana: service up, requests per second, error rate, latency percentiles, slowest routes and database query latency" width="900">
+
+Measured on this run, with authentication on every request: **1,280 rps
+across five routes, p50 12.3 ms, p99 123 ms, zero failures**. The 4xx spikes
+earlier in the window are the unauthenticated probes from the capture above —
+the system refusing them is the thing being shown.
+
+---
+
+## What it looks like
+
+<img src="screenshots/athlete-overview.png" alt="Pitcher overview: summary KPIs, arsenal breakdown by pitch type, and the movement profile scatter" width="900">
+
+A pitcher's profile: the summary line, the arsenal with per-type velocity,
+spin and score, and the movement profile in the handedness-neutral frame
+(positive is arm side for a pitcher, inside for a batter — a direction
+established from the data, not assumed from geometry).
+
+<img src="screenshots/session-detail.png" alt="Outing detail: velocity and spin by pitch number, the pitch timeline, and pitch locations from the catcher's view" width="900">
+
+One outing: velocity and spin over the pitch count, the timeline, and every
+location plotted from the catcher's view with the strike zone drawn from the
+batter's own measured zone rather than a constant.
+
+<p align="center">
+  <img src="screenshots/prediction-vs-actual.png" alt="One pitch: both model outputs, the predicted distribution with the actual outcome marked, and the full measurement table" width="420">
+  <img src="screenshots/pitch-explained.png" alt="The same pitch with its feature attribution: which features moved the prediction, in log-odds space, with everything else collapsed into one remainder" width="420">
+</p>
+
+Left: the prediction against the outcome that actually happened, with the
+actual class marked. Right: the same pitch after asking why — feature
+contributions in the model's own margin space, with everything outside the top
+features collapsed into a single honest remainder so the parts add up.
+
+<img src="screenshots/live-session.png" alt="The live page: running counters, rolling velocity, game state, the arriving feed and the newest pitch's prediction" width="900">
+
+---
+
 ## The ML problem
 
 ### It is not a made-up "pitch quality" score
@@ -786,6 +903,78 @@ The dashboard gets its own policy from nginx, where `script-src 'self'` is the d
 
 ---
 
+## How these were captured
+
+Everything under `screenshots/` is produced by a script, against the running
+stack, and can be regenerated:
+
+```bash
+make demo                      # the stack, seeded, with a replay running
+cd web && npx playwright test  # the captures
+```
+
+The capture suite lives in `web/e2e/` and is deliberately **not** part of
+`npm test`. It needs a browser, a database, a broker and a model; collected
+with the unit tests it would fail on every run for reasons that have nothing
+to do with the code. The two are separated in `vite.config.ts` by include
+path, not by hope.
+
+Three rules the capture scripts follow, because a screenshot is a claim:
+
+**Nothing is mocked.** The specs sign in with the real credentials from
+`.env`, click through the real dashboard and wait for real data. The live
+capture waits for the feed to *grow* rather than for a fixed number of
+seconds, so a clip that shows pitches arriving is a clip where pitches
+arrived.
+
+**The terminal captures are real output.** `web/e2e/auth.txt` and
+`web/e2e/dlq.txt` are verbatim runs, saved to disk and then rendered
+legibly — not a drawing of a terminal, and not a transcript of what the
+commands were expected to say. Every command shown is one that exists:
+`make poison`, `make dlq`, `make dlq-replay`.
+
+**The Grafana window is fifteen minutes, not an hour.** Wide enough to cover
+the run being shown, narrow enough to exclude whatever the machine was doing
+before — otherwise the screenshot documents the person taking it.
+
+### Three bugs the capture work found
+
+Pointing a camera at a system turns out to be a good way to test it. All three
+of these were found while trying to photograph something else, and all three
+are fixed, with tests that fail if the fix is removed.
+
+**The explanation panel outlived its pitch.** `<ExplanationPanel>` had no
+`key`, so React reconciled it by position: selecting a different pitch kept
+the component instance, and with it the attribution already loaded. A
+screenshot of pitch B would have shown pitch A's explanation under it. For a
+panel whose entire job is saying why the model said what it said, that is the
+worst thing it could quietly do. Found while recording the second clip, where
+the script selects two pitches in a row precisely to show the answer changing.
+
+**Dead letters were filed under the wrong reason.** `Classify` treats a
+PostgreSQL integrity violation as permanent on the SQLSTATE alone — correctly,
+because retrying inserts the same rejected row again. But the function that
+*names* the failure only looked for a constraint violation inside an
+explicitly-wrapped `PermanentError`, so the letter recorded `UNKNOWN`. The
+consumer understood the failure perfectly and then filed it under "no idea",
+which is what the replay tool filters on and what the DLQ metric is labelled
+by.
+
+**The dead-letter queue could be drained into an infinite loop, and only a
+third of it could be read at all.** Two faults in the same tool. It read
+partition 0 only, while letters are keyed by the original message key and
+spread across all three — so it reported an empty queue with letters sitting
+in the other two, which is worse than failing, because the operator believes
+it. And replaying put messages back on their source topic with a header
+saying they had been replayed that nothing ever read: a message that will
+never parse fails, is filed again with no memory of any of it, and comes back
+on the next drain. Measured, by accident, at **twenty-nine letters becoming
+one thousand seven hundred and ninety-three**. Both are fixed: every
+partition is read, and a replay count survives the round trip so a letter that
+has exhausted its attempts is left in place with the reason written down.
+
+---
+
 ## What breaks it, and what happens then
 
 The claims this design makes about failure — "Redis is not critical", "no pitch is lost", "the processor recovers" — are statements about behaviour under conditions no ordinary test creates. They are checked by stopping real containers while real traffic is flowing, behind their own build tag because they take minutes and disturb shared infrastructure.
@@ -823,6 +1012,10 @@ The consumer now backs off and keeps asking, because the reader reconnects on it
 | Cache hit ratio | 99.9% |
 
 The acceptance criterion was a p99 under 500 ms.
+
+Re-measured in phase 14, with authentication on every request: **1,280 rps,
+p50 12.3 ms, p99 123 ms, zero failures** — the cost of verifying a signature
+per request is not visible against the cost of the query behind it.
 
 Load testing also found that the Redis pool was sized at ten connections against fifty concurrent workers. The behaviour was correct — calls timed out at 50 ms and fell through to PostgreSQL, and no request failed — but the cache was quietly doing less work than it appeared to. Raising the pool and pre-opening idle connections took the error count from 33 to 9 and the **maximum latency from 2.6 s to 110 ms**: the cold-start dial cost disappeared entirely.
 
@@ -896,6 +1089,7 @@ Player identity mapping uses the Chadwick Bureau / Lahman register (CC BY-SA 3.0
 | 11 | Hardening · chaos, load, security | ✅ Complete |
 | 12 | Demo & documentation | ✅ Complete |
 | 13 | Authentication & security hardening | ✅ Complete |
+| 14 | Visual documentation | ✅ Complete |
 
 Each phase produces something demonstrable on its own — no phase leaves an intermediate artifact that "only makes sense next time."
 
@@ -1117,6 +1311,7 @@ The project is finished when all of the following are true:
 - [x] Grafana shows HTTP latency, Kafka throughput, and ML inference latency
 - [x] One `correlation_id` traces a single pitch end-to-end across every service log
 - [x] No data is served, over REST or WebSocket, without a valid session
+- [x] Every claim above is shown running, from captures anyone can regenerate
 
 ---
 

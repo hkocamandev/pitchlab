@@ -1,0 +1,34 @@
+# one malformed event, published on purpose into the live topic
+$ make poison
+  published one malformed event to pitchlab.pitch.raw.v1
+  it will be dead-lettered; see it with: make dlq
+
+# the processor refuses it, records why, and does not stop
+$ docker compose logs processor | tail -1
+{
+  "level": "ERROR",
+  "msg": "unparseable message",
+  "error_class": "DESERIALIZATION",
+  "partition": 2,
+  "offset": 4226,
+  "error": "decode envelope: invalid UUID length: 0"
+}
+
+# the letter is inspectable, across every partition of the queue
+$ make dlq
+  draining pitchlab.pitch.raw.v1.dlq across 3 partitions
+  read=1 replayed=1 exhausted=0 failed=0
+  DESERIALIZATION: 1
+
+# replaying puts a letter back on its source topic, but only so often:
+# a message that will never parse must not cycle through the queue for ever
+$ make dlq-replay
+  replayed to pitchlab.pitch.raw.v1   replay_count=1
+  replayed to pitchlab.pitch.raw.v1   replay_count=2
+  replayed to pitchlab.pitch.raw.v1   replay_count=3
+  ... 29 more
+  REFUSED   replay_count=3  max_replays=3  class=DESERIALIZATION
+  REFUSED   replay_count=3  max_replays=3  class=DESERIALIZATION
+  REFUSED   replay_count=3  max_replays=3  class=DESERIALIZATION
+
+  read=35  replayed=15  exhausted=20  failed=0

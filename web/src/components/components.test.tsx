@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Measurement, Pitch, PitchTypeStat } from "../api/types.gen";
 import { Empty, ErrorState, Kpi, Query, SyntheticBadge } from "./common";
 import { ApiError } from "../api/client";
-import { MeasurementTable, ProbabilityBars } from "./PitchDetail";
+import { MeasurementTable, PitchDetail, ProbabilityBars } from "./PitchDetail";
 import { StrikeZone } from "./StrikeZone";
 import { PitchTypeBars } from "./charts";
 
@@ -265,5 +265,47 @@ describe("states", () => {
   it("renders an empty message", () => {
     render(<Empty>Nothing here.</Empty>);
     expect(screen.getByText("Nothing here.")).toBeInTheDocument();
+  });
+});
+
+// --- the explanation panel belongs to its pitch ---------------------------
+
+describe("PitchDetail explanation", () => {
+  const attribution = (feature: string) => ({
+    pitch_id: "p1",
+    variant: "pitching",
+    target_class: "CALLED_STRIKE",
+    space: "log_odds",
+    base_value: -3.9,
+    predicted_value: -1.1,
+    predicted_probability: 0.412,
+    contributions: [{ feature, value: 1.19, contribution: 1.838 }],
+    other_contribution: 0.004,
+  });
+
+  it("does not show one pitch's attribution under another pitch", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => attribution("dist_from_zone_center"),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<PitchDetail pitch={pitch({ id: "p1" })} />);
+
+    await user.click(screen.getByRole("button", { name: /explain this pitch/i }));
+    expect(await screen.findByText(/dist_from_zone_center/)).toBeTruthy();
+
+    // Select a different pitch. React reconciles by position, so without a
+    // key the panel keeps its state -- and an attribution computed for one
+    // pitch would sit under another pitch's header, which for a tool whose
+    // whole purpose is explaining a prediction is the worst thing it could
+    // quietly do.
+    rerender(<PitchDetail pitch={pitch({ id: "p2", session_pitch_index: 13 })} />);
+
+    expect(screen.queryByText(/dist_from_zone_center/)).toBeNull();
+    expect(screen.getByRole("button", { name: /explain this pitch/i })).toBeTruthy();
+
+    vi.unstubAllGlobals();
   });
 });

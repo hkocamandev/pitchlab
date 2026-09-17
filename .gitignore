@@ -53,6 +53,13 @@ web/.vite/
 .DS_Store
 Thumbs.db
 
+# --- Documentation captures ---
+# The published images and clips under screenshots/ ARE committed: they are
+# what the README shows. Only the intermediates are not -- Playwright's own
+# output directory, and the raw webm each clip is encoded from.
+screenshots/.playwright/
+screenshots/*.webm
+
 # --- Local tooling ---
 *.log
 tmp/

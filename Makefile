@@ -117,6 +117,14 @@ processor: ## Run the stream processor
 dlq: ## Show what is sitting in the raw-pitch dead-letter queue
 	go run ./cmd/dlq-replay --dlq pitchlab.pitch.raw.v1.dlq --dry-run --timeout 5s
 
+.PHONY: dlq-replay
+dlq-replay: ## Put the dead letters back on their source topic
+	go run ./cmd/dlq-replay --dlq pitchlab.pitch.raw.v1.dlq --timeout 5s
+
+.PHONY: poison
+poison: ## Publish one malformed event, to demonstrate the dead-letter path
+	go run ./cmd/poison
+
 .PHONY: secrets
 secrets: ## Generate .env with a signing secret, if it does not exist yet
 	@if [ -f .env ]; then \
