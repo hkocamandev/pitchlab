@@ -1,0 +1,38 @@
+# every route that returns data needs a session
+$ curl -o /dev/null -w '%{http_code}' localhost:8081/api/v1/athletes
+401
+
+# and a wrong password says only that it was wrong
+$ curl -X POST localhost:8081/api/v1/auth/login -d '{"username":"admin","password":"wrong"}'
+{
+  "title": "Authentication required",
+  "status": 401,
+  "detail": "invalid username or password"
+}
+
+# the real one returns an httpOnly cookie, and no token in the body
+$ curl -c jar -X POST localhost:8081/api/v1/auth/login -d @credentials.json
+{
+    "user": {
+        "id": "01a0aaa7-404d-7b00-8441-fa319819610e",
+        "username": "admin",
+        "display_name": "Administrator",
+        "role": "admin"
+    },
+    "expires_at": "2026-09-17T16:11:19Z"
+}
+
+$ grep pitchlab_session jar
+#HttpOnly_localhost  /  pitchlab_session  eyJhbGciOiJIUzI1NiIsInR5cCI6...
+
+$ curl -b jar -o /dev/null -w '%{http_code}' localhost:8081/api/v1/athletes
+200
+
+# the live channel is behind the same fence, checked before the upgrade
+$ curl $WS_HEADERS localhost:8081/ws/sessions/$SESSION
+401
+
+$ curl -b jar $WS_HEADERS localhost:8081/ws/sessions/$SESSION
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade

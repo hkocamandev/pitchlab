@@ -253,7 +253,13 @@ export function PitchDetail({ pitch }: { pitch: Pitch }) {
         </div>
       )}
 
-      <ExplanationPanel pitchId={pitch.id} variant="pitching" />
+      {/* key, and it is load-bearing. React reconciles by position and type,
+          so without it this component keeps its state when a different pitch
+          is selected -- leaving an attribution computed for one pitch sitting
+          under another pitch's header. For a panel whose entire job is saying
+          why the model said what it said, that is the worst thing it could
+          quietly do. A test holds this. */}
+      <ExplanationPanel key={pitch.id} pitchId={pitch.id} variant="pitching" />
 
       {pitch.correlation_id && (
         // The last link in the end-to-end trace. One grep in the server logs

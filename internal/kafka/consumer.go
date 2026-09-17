@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -362,6 +363,10 @@ type DeadLetter struct {
 	OriginalOffset    int64  `json:"original_offset"`
 	OriginalKey       string `json:"original_key"`
 
+	// ReplayCount is how many times this message has already been put back on
+	// its source topic. Zero for a message that failed on its first arrival.
+	ReplayCount int `json:"replay_count,omitempty"`
+
 	Failure DeadLetterFailure `json:"failure"`
 }
 
@@ -374,6 +379,34 @@ type DeadLetterFailure struct {
 	Consumer      string    `json:"consumer"`
 	ConsumerGroup string    `json:"consumer_group"`
 	CorrelationID string    `json:"correlation_id,omitempty"`
+}
+
+// ReplayCountHeader records how many times a message has been put back on its
+// source topic by the replay tool.
+//
+// It exists because a dead-letter queue drained back into the topic it came
+// from is a cycle waiting to happen: a permanently-broken message fails, is
+// filed, is replayed, fails again, and is filed again with no memory of any
+// of it. Left unbounded that is not a retry, it is amplification -- measured
+// here at twenty-nine letters becoming twelve hundred in ten minutes, which
+// also buries every other letter in the queue.
+const ReplayCountHeader = "replay_count"
+
+// replayCount reads the header, treating anything unparseable as a fresh
+// message. Refusing to guess is the safe direction: an unreadable count must
+// not make a legitimate first replay look like a cycle.
+func replayCount(headers []kafka.Header) int {
+	for _, h := range headers {
+		if h.Key != ReplayCountHeader {
+			continue
+		}
+		n, err := strconv.Atoi(string(h.Value))
+		if err != nil || n < 0 {
+			return 0
+		}
+		return n
+	}
+	return 0
 }
 
 func (c *Consumer) deadLetter(
@@ -395,6 +428,7 @@ func (c *Consumer) deadLetter(
 	}
 
 	letter := DeadLetter{
+		ReplayCount:       replayCount(msg.Headers),
 		OriginalPayload:   msg.Value,
 		OriginalTopic:     msg.Topic,
 		OriginalPartition: msg.Partition,
@@ -439,6 +473,10 @@ func (c *Consumer) deadLetter(
 			{Key: "error_class", Value: []byte(class)},
 			{Key: "original_topic", Value: []byte(msg.Topic)},
 			{Key: "correlation_id", Value: []byte(correlationID)},
+			// Carried forward so the count survives the round trip through
+			// the queue; without this the letter forgets and the cycle has
+			// nothing to stop it.
+			{Key: ReplayCountHeader, Value: []byte(strconv.Itoa(letter.ReplayCount))},
 		},
 	}); err != nil {
 		log.Error("write dead letter", "topic", c.cfg.DLQTopic, "error", err)
@@ -489,26 +527,41 @@ func parseErrorClass(err error) string {
 	return "DESERIALIZATION"
 }
 
+// errorClass names the reason a message was dead-lettered.
+//
+// It has to recognise permanence the same way Classify does, and that is the
+// whole reason the constraint check sits outside the PermanentError branch.
+// A database integrity violation arrives from the store as an ordinary
+// wrapped error: Classify sends it to the dead-letter queue on the SQLSTATE
+// alone, and if this function only looked inside PermanentError it would file
+// a failure the consumer understood perfectly under "UNKNOWN" -- which is
+// what the replay tool filters on and what the DLQ metric is labelled by.
 func errorClass(err error) string {
+	switch {
+	case errors.Is(err, events.ErrMissingEventID),
+		errors.Is(err, events.ErrMissingEventType),
+		errors.Is(err, events.ErrMissingCorrelationID),
+		errors.Is(err, events.ErrMissingIdempotency),
+		errors.Is(err, events.ErrMissingPartitionKey),
+		errors.Is(err, events.ErrEmptyData):
+		return "SCHEMA_VALIDATION"
+	}
+
+	var schemaErr *events.ErrUnsupportedSchema
+	if errors.As(err, &schemaErr) {
+		return "UNKNOWN_SCHEMA_VERSION"
+	}
+
+	if isConstraintViolation(err) {
+		return "PERSISTENCE_PERMANENT"
+	}
+
+	// Anything explicitly raised as permanent, with no more specific cause
+	// recognised above, is a rule the domain refused to break.
 	var perm *PermanentError
 	if errors.As(err, &perm) {
-		switch {
-		case errors.Is(err, events.ErrMissingEventID),
-			errors.Is(err, events.ErrMissingEventType),
-			errors.Is(err, events.ErrMissingCorrelationID),
-			errors.Is(err, events.ErrMissingIdempotency),
-			errors.Is(err, events.ErrMissingPartitionKey),
-			errors.Is(err, events.ErrEmptyData):
-			return "SCHEMA_VALIDATION"
-		}
-		var schemaErr *events.ErrUnsupportedSchema
-		if errors.As(err, &schemaErr) {
-			return "UNKNOWN_SCHEMA_VERSION"
-		}
-		if isConstraintViolation(err) {
-			return "PERSISTENCE_PERMANENT"
-		}
 		return "BUSINESS_RULE_VIOLATION"
 	}
+
 	return "UNKNOWN"
 }
