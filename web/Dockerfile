@@ -1,6 +1,6 @@
 # Build stage. The dashboard is a static bundle: there is no server-side
 # rendering, so nothing from this stage ships except the compiled assets.
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 
 WORKDIR /app
 
