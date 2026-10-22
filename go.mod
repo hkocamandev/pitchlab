@@ -9,7 +9,7 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
 	github.com/redis/go-redis/v9 v9.7.3
-	github.com/segmentio/kafka-go v0.4.48
+	github.com/segmentio/kafka-go v0.4.51
 	golang.org/x/crypto v0.58.0
 )
 
