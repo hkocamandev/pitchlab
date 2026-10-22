@@ -17,18 +17,18 @@ pyarrow>=17
 lightgbm>=4.5,<5
 scikit-learn>=1.5,<2
 scipy>=1.14
-shap>=0.46
+shap>=0.54.1
 
 # --- Reporting ---
-matplotlib>=3.9
+matplotlib>=3.11.2
 tqdm>=4.66
-psycopg[binary]>=3.2
+psycopg[binary]>=3.3.6
 
 # --- Inference service ---
 fastapi>=0.115
-uvicorn[standard]>=0.32
-pydantic>=2.9
-httpx>=0.27
+uvicorn[standard]>=0.54.0
+pydantic>=2.14.1
+httpx>=0.28.1
 prometheus-client>=0.21
 
 # --- Security floors for transitive dependencies ---
