@@ -3,7 +3,7 @@
 **An event-driven pitch analytics platform that replays historical MLB Statcast data as a live tracking-device feed, scores every pitch with a calibrated ML model, and streams the results to a real-time dashboard.**
 
 [![Status](https://img.shields.io/badge/status-complete-brightgreen)](#roadmap)
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-3776AB)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev)
 
@@ -1041,7 +1041,7 @@ The integration and chaos suites are **not** in CI. They need a broker, a databa
 
 | Layer | Choice | Why |
 |---|---|---|
-| Backend | Go 1.25 | High concurrency (Kafka consumers + WebSocket hub), single-binary deploys, low memory |
+| Backend | Go 1.26 | High concurrency (Kafka consumers + WebSocket hub), single-binary deploys, low memory |
 | ML | Python 3.14 · LightGBM · FastAPI | Best-in-class on tabular data; SHAP for explainability; low-latency serving |
 | Messaging | Apache Kafka (KRaft) | Ordering per partition, offset-based replay, consumer groups, durability |
 | Database | PostgreSQL 16 | Strong constraints, JSONB, partial indexes, `sqlc` for compile-time-safe SQL |
@@ -1275,7 +1275,7 @@ curl 'localhost:8081/api/v1/athletes?limit=5'
 curl "localhost:8081/api/v1/athletes/$ID/analytics"
 ```
 
-**Prerequisites:** Go 1.25+, Python 3.12+, Node 20+, Docker with Compose v2.
+**Prerequisites:** Go 1.26+, Python 3.12+, Node 20+, Docker with Compose v2.
 
 > `pandas` is pinned below 3.0: `pybaseball` declares an unbounded
 > `pandas>=1.0.3` but predates the 3.0 API changes, so an unpinned install
