@@ -4,15 +4,39 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Version-update PRs for minor and patch releases only; major upgrades
+    # need code changes and are done deliberately. Security updates are not
+    # affected by this rule and still arrive for any version.
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
   - package-ecosystem: npm
     directory: /web
     schedule:
       interval: weekly
+    # Version-update PRs for minor and patch releases only; major upgrades
+    # need code changes and are done deliberately. Security updates are not
+    # affected by this rule and still arrive for any version.
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
     open-pull-requests-limit: 5
   - package-ecosystem: pip
     directory: /ml
     schedule:
       interval: weekly
+    # Version-update PRs for minor and patch releases only; major upgrades
+    # need code changes and are done deliberately. Security updates are not
+    # affected by this rule and still arrive for any version.
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
   - package-ecosystem: docker
     directories:
       - /
@@ -20,11 +44,35 @@ updates:
       - /web
     schedule:
       interval: weekly
+    # Version-update PRs for minor and patch releases only; major upgrades
+    # need code changes and are done deliberately. Security updates are not
+    # affected by this rule and still arrive for any version.
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
   - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
+    # Version-update PRs for minor and patch releases only; major upgrades
+    # need code changes and are done deliberately. Security updates are not
+    # affected by this rule and still arrive for any version.
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # Version-update PRs for minor and patch releases only; major upgrades
+    # need code changes and are done deliberately. Security updates are not
+    # affected by this rule and still arrive for any version.
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
