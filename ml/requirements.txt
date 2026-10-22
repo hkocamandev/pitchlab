@@ -26,7 +26,7 @@ psycopg[binary]>=3.2
 
 # --- Inference service ---
 fastapi>=0.115
-uvicorn[standard]>=0.32
+uvicorn[standard]>=0.54.0
 pydantic>=2.9
 httpx>=0.27
 prometheus-client>=0.21
