@@ -21,7 +21,7 @@ shap>=0.54.1
 
 # --- Reporting ---
 matplotlib>=3.11.2
-tqdm>=4.66
+tqdm>=4.70.1
 psycopg[binary]>=3.3.6
 
 # --- Inference service ---
