@@ -237,7 +237,7 @@ services:
     profiles: ["observability"]
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:13.2.4
     container_name: pitchlab-grafana
     depends_on:
       - prometheus
