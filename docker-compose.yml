@@ -61,7 +61,7 @@ services:
   kafka:
     # The official Apache image in KRaft mode: no ZooKeeper, one container,
     # multi-arch so it runs natively on Apple Silicon.
-    image: apache/kafka:3.9.0
+    image: apache/kafka:4.3.1
     container_name: pitchlab-kafka
     environment:
       KAFKA_NODE_ID: 1
