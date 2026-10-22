@@ -23,7 +23,7 @@ RUN npx tsc -b && npm run build
 # entirely as an unprivileged user and listens on 8080 because a non-root
 # process cannot bind a port below 1024. Nothing here needs root, and a
 # container that has it is a container that can be asked to use it.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Not under conf.d/: everything there is included at http level, and this
