@@ -38,6 +38,6 @@ prometheus-client>=0.21
 # pin exactly, or the next fix has to wait for this file to change.
 pillow>=13.0.0       # via matplotlib
 anyio>=4.14.2        # via httpx, starlette
-idna>=3.15           # via anyio, httpx, requests
+idna>=3.20           # via anyio, httpx, requests
 certifi>=2026.10.19  # via httpx, requests
 pyjwt>=2.15.0        # via pybaseball -> PyGithub
