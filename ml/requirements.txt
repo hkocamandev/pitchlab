@@ -40,4 +40,4 @@ pillow>=13.0.0       # via matplotlib
 anyio>=4.14.2        # via httpx, starlette
 idna>=3.15           # via anyio, httpx, requests
 certifi>=2026.10.19  # via httpx, requests
-pyjwt>=2.15.0        # via pybaseball -> PyGithub
+pyjwt>=2.15.1        # via pybaseball -> PyGithub
