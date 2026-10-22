@@ -29,7 +29,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.54.0
 pydantic>=2.14.1
 httpx>=0.28.1
-prometheus-client>=0.21
+prometheus-client>=0.26.0
 
 # --- Security floors for transitive dependencies ---
 # None of these are imported directly. They are listed so that a resolver
