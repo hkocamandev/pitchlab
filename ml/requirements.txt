@@ -10,7 +10,7 @@
 # --- Data access ---
 pybaseball==2.2.7
 pandas>=2.3.3,<3
-numpy>=2.0,<3
+numpy>=2.5.4,<3
 pyarrow>=17
 
 # --- Modeling ---
