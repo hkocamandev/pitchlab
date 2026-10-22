@@ -20,7 +20,7 @@ scipy>=1.14
 shap>=0.46
 
 # --- Reporting ---
-matplotlib>=3.9
+matplotlib>=3.11.2
 tqdm>=4.66
 psycopg[binary]>=3.2
 
