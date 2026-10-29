@@ -37,7 +37,7 @@ prometheus-client>=0.26.0
 # with a published advisory. Raise a floor when an advisory moves it; do not
 # pin exactly, or the next fix has to wait for this file to change.
 pillow>=13.0.0       # via matplotlib
-anyio>=4.14.2        # via httpx, starlette
+anyio>=4.15.1        # via httpx, starlette
 idna>=3.20           # via anyio, httpx, requests
 certifi>=2026.10.19  # via httpx, requests
 pyjwt>=2.15.1        # via pybaseball -> PyGithub
