@@ -38,7 +38,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     CGO_ENABLED=0 go build -trimpath \
         -ldflags="-s -w" -o /out/wsclient ./cmd/wsclient
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 # wget for the health check, and certificates in case anything ever talks to a
 # TLS endpoint. Nothing else: every package in a runtime image is a package
