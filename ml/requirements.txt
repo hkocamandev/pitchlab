@@ -11,7 +11,7 @@
 pybaseball==2.2.7
 pandas>=2.3.3,<3
 numpy>=2.5.4,<3
-pyarrow>=17
+pyarrow>=26.0.0
 
 # --- Modeling ---
 lightgbm>=4.5,<5
