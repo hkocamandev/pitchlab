@@ -5,7 +5,7 @@
 # the dependency download. Which binary runs is chosen at start time by the
 # compose command, not at build time.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 WORKDIR /src
 
@@ -38,7 +38,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     CGO_ENABLED=0 go build -trimpath \
         -ldflags="-s -w" -o /out/wsclient ./cmd/wsclient
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 # wget for the health check, and certificates in case anything ever talks to a
 # TLS endpoint. Nothing else: every package in a runtime image is a package
